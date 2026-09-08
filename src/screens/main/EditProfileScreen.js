@@ -20,14 +20,7 @@ import { useAuth } from '../../context/AuthContext';
 import { uploadAvatar } from '../../services/storage';
 import FormInput from '../../components/FormInput';
 import Button from '../../components/Button';
-
-function initialsFor(name, email) {
-  const source = (name || email || '').trim();
-  if (!source) return '?';
-  const parts = source.split(' ').filter(Boolean);
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[1][0]).toUpperCase();
-}
+import { initialsFor } from '../../utils/user';
 
 const AVATAR_SIZE = 96;
 
@@ -76,13 +69,13 @@ export default function EditProfileScreen() {
         photoURL = await uploadAvatar(user.uid, photoURI);
       }
       const res = await updateUserProfile({ name: name.trim(), photoURL });
-    setSaving(false);
+      setSaving(false);
 
-    if (res.success) {
-      navigation.goBack();
-    } else {
-      Alert.alert('Could not save', res.error);
-    }
+      if (res.success) {
+        navigation.goBack();
+      } else {
+        Alert.alert('Could not save', res.error);
+      }
     } catch (e) {
       setSaving(false);
       Alert.alert('Could not save', e.message);

@@ -14,7 +14,7 @@ export default function AccountScreen() {
 
   const rows = [
     { label: 'Email', value: user?.email },
-    { label: 'User ID', value: user?.uid?.slice(0, 12) + '...' },
+    { label: 'User ID', value: user?.uid ? `${user.uid.slice(0, 12)}...` : '' },
     { label: 'Plan', value: user?.plan || 'free' },
   ];
 
