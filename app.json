@@ -21,6 +21,12 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "b0ac9497-9215-40be-88ff-a4c7e96324d3"
+      }
+    },
+    "owner": "technoinsider"
   }
 }

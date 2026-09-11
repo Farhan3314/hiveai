@@ -11,7 +11,7 @@ Collaborate. Chat. Create. With AI.
 - **Dashboard** — Groups list with search + create group
 - **Friends** — Send/accept requests by email, tabs (All / Requests / Sent)
 - **Group Chat** — Real-time messages via Firestore, file attachments
-- **@HiveAI mentions** — AI replies in group chat when you mention `@HiveAI` or `@AI`
+- **AI in every group chat** — HiveAI reads and replies to every text message sent in a group (mentioning `@HiveAI` / `@AI` still works too — it just strips the mention before sending the prompt)
 - **AI Assistant tab** — Standalone 1:1 chat with HiveAI
 - **File Analysis** — Upload + AI analysis of documents
 - **Notifications** — Friend requests, AI replies, etc.
@@ -52,17 +52,14 @@ In the Firebase Console, enable:
 
 Then paste your project credentials into the env variables above.
 
-Suggested Firestore rules (dev):
+Firestore rules: use the ones in [`firestore.rules`](./firestore.rules) at the
+project root — they scope every collection this app actually writes to
+(groups, messages, friend requests/friendships, notifications, AI chats, RAG
+docs) to the users who should have access, and default-deny everything else.
+Deploy them with the Firebase CLI:
 
-```
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /{document=**} {
-      allow read, write: if request.auth != null;
-    }
-  }
-}
+```bash
+firebase deploy --only firestore:rules
 ```
 
 ### Step 3: OpenAI / AI providers (optional)

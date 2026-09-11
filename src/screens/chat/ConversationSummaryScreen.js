@@ -7,8 +7,8 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { useTheme } from '../../theme/ThemeContext';
 import Button from '../../components/Button';
 import { getMessagesForSummary } from '../../services/messages';
-import { generateConversationSummary } from '../../services/ai';
-import { incrementAIUsage } from '../../services/users';
+import { generateConversationSummary, aiLimitReachedMessage } from '../../services/ai';
+import { incrementAIUsage, checkAIUsageLimit } from '../../services/users';
 import { useAuth } from '../../context/AuthContext';
 
 export default function ConversationSummaryScreen() {
@@ -24,12 +24,18 @@ export default function ConversationSummaryScreen() {
   const handleGenerate = async () => {
     setLoading(true);
     try {
+      const { allowed, plan, limit } = await checkAIUsageLimit(user.uid).catch(() => ({ allowed: true }));
+      if (!allowed) {
+        setSummary(aiLimitReachedMessage(plan, limit));
+        return;
+      }
       const messages = await getMessagesForSummary(groupId);
       const result = await generateConversationSummary(messages);
       setSummary(result);
       await incrementAIUsage(user.uid, 1);
     } catch (e) {
-      setSummary(`Error: ${e.message}`);
+      console.error('ConversationSummary generate error:', e);
+      setSummary("Sorry, I couldn't generate a summary just now. Please try again in a moment 🙏");
     } finally {
       setLoading(false);
     }

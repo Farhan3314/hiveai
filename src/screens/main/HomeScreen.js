@@ -200,7 +200,7 @@ export default function HomeScreen() {
               {greeting}
             </Text>
             <Text style={[typography.h2, { color: colors.textPrimary }]}>
-              {user?.name || 'there'}
+              {firstName}
             </Text>
           </View>
           <Pressable onPress={() => navigation.navigate('Profile')} hitSlop={8}>

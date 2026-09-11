@@ -16,10 +16,10 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 
 import { useTheme } from '../../theme/ThemeContext';
 import { useAuth } from '../../context/AuthContext';
-import { generateRAGAnswer } from '../../services/ai';
+import { generateRAGAnswer, aiLimitReachedMessage } from '../../services/ai';
 import { ingestDocument, retrieveContext, isRAGSupported } from '../../services/rag';
 import { embeddingsAvailable } from '../../services/embeddings';
-import { incrementAIUsage } from '../../services/users';
+import { incrementAIUsage, checkAIUsageLimit } from '../../services/users';
 import { RAG_SUPPORTED_EXTENSIONS } from '../../config';
 
 // STAGE constants drive the "Uploading -> Processing -> Completed" status
@@ -127,14 +127,23 @@ export default function FileAnalysisScreen() {
     setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
 
     try {
-      const chunks = await retrieveContext({ scopePath, docId, question: trimmed, topK: 4 });
-      const answer = await generateRAGAnswer(trimmed, chunks);
-      await incrementAIUsage(user.uid, 1).catch(() => {});
+      const { allowed, plan, limit } = await checkAIUsageLimit(user.uid).catch(() => ({ allowed: true }));
+      let answer;
+      if (!allowed) {
+        answer = aiLimitReachedMessage(plan, limit);
+      } else {
+        const chunks = await retrieveContext({ scopePath, docId, question: trimmed, topK: 4 });
+        answer = await generateRAGAnswer(trimmed, chunks);
+        await incrementAIUsage(user.uid, 1).catch(() => {});
+      }
       setQa((prev) => prev.map((item) => (item.id === entryId ? { ...item, answer, loading: false } : item)));
     } catch (e) {
+      console.error('FileAnalysis ask error:', e);
       setQa((prev) =>
         prev.map((item) =>
-          item.id === entryId ? { ...item, answer: `Error: ${e.message}`, loading: false } : item
+          item.id === entryId
+            ? { ...item, answer: "Sorry, I couldn't answer that just now. Please try again in a moment 🙏", loading: false }
+            : item
         )
       );
     } finally {

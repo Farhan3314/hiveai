@@ -1,5 +1,6 @@
-import { doc, getDoc, setDoc, updateDoc, serverTimestamp, collection, query, where, getDocs } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp, collection, query, where, getDocs, increment } from 'firebase/firestore';
 import { db } from './firebase';
+import { PLANS } from '../config';
 
 export async function ensureUserProfile(firebaseUser) {
   const ref = doc(db, 'users', firebaseUser.uid);
@@ -53,10 +54,28 @@ export async function findUserByEmail(email) {
   return { id: d.id, ...d.data() };
 }
 
+// Uses Firestore's atomic increment() instead of read-then-write. The old
+// version did getDoc() -> updateDoc(current + amount), which loses updates
+// when two increments for the same user land close together (e.g. two group
+// messages triggering AI replies within the same second) — increment() is
+// computed server-side off the true current value, so concurrent calls never
+// clobber each other.
 export async function incrementAIUsage(uid, amount = 1) {
   const ref = doc(db, 'users', uid);
+  await updateDoc(ref, { aiTokensUsed: increment(amount) });
+}
+
+// Checks whether a user still has AI requests left on their plan this month,
+// WITHOUT spending one. Every place that's about to call a real AI provider
+// (group chat, AI Assistant tab, file analysis, etc.) should call this first
+// — previously only the AI Usage screen showed "limit reached", but nothing
+// actually stopped a paid API call from firing once someone was over it.
+export async function checkAIUsageLimit(uid) {
+  const ref = doc(db, 'users', uid);
   const snap = await getDoc(ref);
-  const current = snap.data()?.aiTokensUsed || 0;
-  await updateDoc(ref, { aiTokensUsed: current + amount });
-  return current + amount;
+  const data = snap.data() || {};
+  const plan = data.plan || 'free';
+  const used = data.aiTokensUsed || 0;
+  const limit = PLANS[plan]?.aiLimit ?? PLANS.free.aiLimit;
+  return { allowed: used < limit, used, limit, plan };
 }

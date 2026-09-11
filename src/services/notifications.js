@@ -1,4 +1,4 @@
-import { collection, addDoc, query, where, onSnapshot, updateDoc, doc, serverTimestamp, orderBy } from 'firebase/firestore';
+import { collection, addDoc, query, where, onSnapshot, updateDoc, doc, serverTimestamp } from 'firebase/firestore';
 import { db } from './firebase';
 import { sendPushNotification } from './push';
 
@@ -49,16 +49,48 @@ export async function updateNotification(notifId, data) {
   await updateDoc(doc(db, 'notifications', notifId), data);
 }
 
+// NOTE: this used to be `where('userId', '==', userId)` combined with
+// `orderBy('createdAt', 'desc')` in the SAME query. Firestore only serves an
+// equality-filter + orderBy-on-a-different-field query like that from a
+// COMPOSITE index — and this project never had one created for the
+// `notifications` collection. Firestore doesn't silently ignore the
+// orderBy in that case; it rejects the whole query with a
+// `failed-precondition` error. On top of that, the onSnapshot error
+// callback here used to be `() => callback([])` — it swallowed the error
+// completely with no console output. End result: `createNotification`
+// (group invite via email/friend-add, remove, left, etc.) wrote its
+// Firestore doc just fine, but the recipient's NotificationsScreen listener
+// failed on every single load and just showed an empty list — with nothing
+// in the logs to explain why. That's the "invite email jata hai but
+// notification app mein nahi aati" bug.
+//
+// Fix: drop `orderBy` from the query (equality-only filters don't need a
+// composite index) and sort client-side instead — this needs zero Firebase
+// console setup and can never silently fail this way again. The error
+// callback now also logs, so any future permission/index problem shows up
+// immediately instead of pretending "no notifications".
 export function subscribeNotifications(userId, callback) {
-  const q = query(
-    collection(db, 'notifications'),
-    where('userId', '==', userId),
-    orderBy('createdAt', 'desc')
-  );
+  const q = query(collection(db, 'notifications'), where('userId', '==', userId));
   return onSnapshot(
     q,
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
-    () => callback([])
+    (snap) => {
+      const notifs = snap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => {
+          const aTime = a.createdAt?.toMillis?.() || 0;
+          const bTime = b.createdAt?.toMillis?.() || 0;
+          return bTime - aTime;
+        });
+      callback(notifs);
+    },
+    (err) => {
+      console.error('[notifications] subscribeNotifications FAILED', {
+        userId,
+        code: err.code,
+        message: err.message,
+      });
+      callback([]);
+    }
   );
 }
 

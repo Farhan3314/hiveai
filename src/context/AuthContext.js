@@ -111,7 +111,7 @@ export function AuthProvider({ children }) {
         updateUserDoc(credential.user.uid, {
           name: fullName,
           email: email.trim().toLowerCase(),
-        }).catch(() => {}),
+        }).catch(() => { }),
       ]);
       setUser({
         uid: credential.user.uid,

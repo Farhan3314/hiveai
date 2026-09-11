@@ -20,9 +20,9 @@ import * as DocumentPicker from 'expo-document-picker';
 
 import { useTheme } from '../../theme/ThemeContext';
 import MessageBubble from '../../components/MessageBubble';
-import { generateAIReply, generateRAGAnswer, analyzeImageContent } from '../../services/ai';
+import { generateAIReply, generateRAGAnswer, analyzeImageContent, aiLimitReachedMessage } from '../../services/ai';
 import { retrieveContext, hasReadyDocuments } from '../../services/rag';
-import { incrementAIUsage } from '../../services/users';
+import { incrementAIUsage, checkAIUsageLimit } from '../../services/users';
 import { uploadAIChatFile } from '../../services/storage';
 import { useAuth } from '../../context/AuthContext';
 import {
@@ -105,18 +105,26 @@ export default function AIAssistantScreen() {
         text: trimmed,
       });
 
-      // If this conversation has documents uploaded to it, answer using
-      // retrieved passages (FR-019 / FR-024) instead of a generic reply.
-      const scopePath = `users/${user.uid}/aiChats/${chatId}`;
+      // Check the plan limit BEFORE spending a real AI call — mirrors the
+      // same guard in group chat (services/messages.js).
+      const { allowed, plan, limit } = await checkAIUsageLimit(user.uid).catch(() => ({ allowed: true }));
+
       let reply;
-      const usesDocs = await hasReadyDocuments(scopePath).catch(() => false);
-      if (usesDocs) {
-        const chunks = await retrieveContext({ scopePath, question: trimmed, topK: 4 });
-        reply = chunks.length ? await generateRAGAnswer(trimmed, chunks) : await generateAIReply(trimmed);
+      if (!allowed) {
+        reply = aiLimitReachedMessage(plan, limit);
       } else {
-        reply = await generateAIReply(trimmed);
+        // If this conversation has documents uploaded to it, answer using
+        // retrieved passages (FR-019 / FR-024) instead of a generic reply.
+        const scopePath = `users/${user.uid}/aiChats/${chatId}`;
+        const usesDocs = await hasReadyDocuments(scopePath).catch(() => false);
+        if (usesDocs) {
+          const chunks = await retrieveContext({ scopePath, question: trimmed, topK: 4 });
+          reply = chunks.length ? await generateRAGAnswer(trimmed, chunks) : await generateAIReply(trimmed);
+        } else {
+          reply = await generateAIReply(trimmed);
+        }
+        await incrementAIUsage(user.uid, 1);
       }
-      await incrementAIUsage(user.uid, 1);
 
       await addAIChatMessage(user.uid, chatId, {
         senderId: 'hiveai',
@@ -178,12 +186,18 @@ export default function AIAssistantScreen() {
         fileName,
       });
 
-      const mime = asset.mimeType || 'image/jpeg';
-      const dataUrl = asset.base64 ? `data:${mime};base64,${asset.base64}` : null;
-      const reply = dataUrl
-        ? await analyzeImageContent(fileName, dataUrl)
-        : 'Sorry, I could not read that image.';
-      await incrementAIUsage(user.uid, 1);
+      const { allowed, plan, limit } = await checkAIUsageLimit(user.uid).catch(() => ({ allowed: true }));
+      let reply;
+      if (!allowed) {
+        reply = aiLimitReachedMessage(plan, limit);
+      } else {
+        const mime = asset.mimeType || 'image/jpeg';
+        const dataUrl = asset.base64 ? `data:${mime};base64,${asset.base64}` : null;
+        reply = dataUrl
+          ? await analyzeImageContent(fileName, dataUrl)
+          : 'Sorry, I could not read that image.';
+        await incrementAIUsage(user.uid, 1);
+      }
 
       await addAIChatMessage(user.uid, chatId, {
         senderId: 'hiveai',

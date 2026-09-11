@@ -180,7 +180,17 @@ export async function sendPushNotification(userId, { title, body, data = {} }) {
     const token = userSnap.exists() ? userSnap.data()?.expoPushToken : null;
 
     if (!token) {
-      console.warn(
+      // Not an error — this is the normal case whenever the target user
+      // is testing in Expo Go (push registration is skipped there, see
+      // the top of this file) or simply hasn't granted permission yet.
+      // Using console.log instead of console.warn keeps this out of the
+      // in-app LogBox banner, same reasoning as the isExpoGo() check in
+      // registerForPushNotificationsAsync above — this branch runs on
+      // EVERY notification (friend requests, group invites, AI replies,
+      // ...), so leaving it as console.warn meant the full-screen LogBox
+      // popped up constantly during ordinary testing even though nothing
+      // was actually wrong.
+      console.log(
         `[push] sendPushNotification: user ${userId} has no expoPushToken saved ` +
           '(they may not have opened the app on a development build yet, or denied permission). Skipping push.'
       );

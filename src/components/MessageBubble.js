@@ -63,6 +63,23 @@ export default function MessageBubble({ message, isOwn }) {
           </Text>
         )}
         <View style={[styles.bubble, { backgroundColor: bubbleBg, borderRadius: radius.lg }]}>
+          {isAI && !!message.replyToSenderName && (
+            <View
+              style={[
+                styles.replyToBar,
+                { borderLeftColor: colors.aiAccent, marginBottom: 6 },
+              ]}
+            >
+              <Text style={[typography.small, { color: colors.aiAccent }]}>
+                Replying to {message.replyToSenderName}
+              </Text>
+              {!!message.replyToText && (
+                <Text style={[typography.small, { color: textColor, opacity: 0.7 }]} numberOfLines={1}>
+                  {message.replyToText}
+                </Text>
+              )}
+            </View>
+          )}
           {message.type === 'image' ? (
             <>
               <Pressable onPress={() => message.fileUrl && setPreviewVisible(true)}>
@@ -113,6 +130,7 @@ const styles = StyleSheet.create({
   bubble: { paddingHorizontal: 14, paddingVertical: 10 },
   typingRow: { flexDirection: 'row', alignItems: 'center' },
   fileRow: { flexDirection: 'row', alignItems: 'center' },
+  replyToBar: { borderLeftWidth: 2, paddingLeft: 8 },
   image: { width: 220, height: 220 },
   previewOverlay: {
     flex: 1,

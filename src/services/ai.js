@@ -37,7 +37,13 @@ async function callAIProvider(messages, maxTokens) {
         'HTTP-Referer': 'https://hiveai.app',
         'X-Title': 'HiveAI',
       },
-      body: JSON.stringify({ model: OPENROUTER_MODEL, messages, max_tokens: maxTokens }),
+
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
+        messages,
+        max_tokens: maxTokens,
+        reasoning: { enabled: false },
+      }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -50,19 +56,28 @@ async function callAIProvider(messages, maxTokens) {
   return null;
 }
 
-export async function generateAIReply(userMessage) {
+// Shown instead of calling a real (paid) AI provider once a user is over
+// their plan's monthly AI request limit.
+export function aiLimitReachedMessage(plan, limit) {
+  const planName = plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : 'Free';
+  return `You've hit your ${planName} plan's limit of ${limit} AI requests this month, so I can't reply right now. Upgrade your plan from Settings → AI Usage to keep chatting with me 🙏`;
+}
+
+export async function generateAIReply(userMessage, senderName) {
   const cleaned = userMessage.replace(/@(?:HiveAI|AI)\b/gi, '').trim();
-  // Guard against an empty prompt (e.g. someone sends just "@HiveAI" with
-  // nothing else) — sending an empty user turn to the API is what used to
-  // come back with no content at all, which then showed up in the chat as
-  // "Sorry, I could not generate a reply."
+
   const promptText = cleaned || userMessage.trim() || 'Hello';
 
   if (!OPENAI_API_KEY && !OPENROUTER_API_KEY) {
     return `[Demo mode] ${AI_BOT_NAME}: ${DEMO_REPLIES[Math.floor(Math.random() * DEMO_REPLIES.length)]}\n\n(Aapka message: "${promptText.slice(0, 120)}")`;
   }
 
-  const systemPrompt = `You are ${AI_BOT_NAME}, a helpful AI teammate in a group chat app. Be concise, friendly, and practical. Reply in the same language the user uses (English or Urdu). Always write at least one sentence back, even for a short greeting like "hi" or "hello" — never return an empty reply.`;
+  // Naming the sender matters in a group chat: several people can message
+  // within moments of each other, and each gets a separate AI reply, so
+  // telling the model who's asking keeps its wording (e.g. "Hey <name>...")
+  // clearly tied to the right person instead of reading as generic.
+  const senderContext = senderName ? ` You're replying to a group chat message from ${senderName}.` : '';
+  const systemPrompt = `You are ${AI_BOT_NAME}, a helpful AI teammate in a group chat app.${senderContext} Be concise, friendly, and practical. Reply in the same language the user uses (English or Urdu). Always write at least one sentence back, even for a short greeting like "hi" or "hello" — never return an empty reply.`;
 
   try {
     let reply = await callAIProvider(
@@ -73,10 +88,7 @@ export async function generateAIReply(userMessage) {
       400
     );
 
-    // Some free/short-context models occasionally return an empty
-    // completion for very short prompts (a plain "hi"). Rather than show
-    // the user a dead-end error, retry once with a slightly larger token
-    // budget before giving up.
+
     if (!reply || !reply.trim()) {
       reply = await callAIProvider(
         [
@@ -89,15 +101,16 @@ export async function generateAIReply(userMessage) {
 
     return (reply && reply.trim()) || `Hey! 👋 I'm ${AI_BOT_NAME} — how can I help?`;
   } catch (e) {
+    // Never put e.message directly in a chat message — it can contain raw
+    // provider/API text (keys, internal error codes, etc.) that has no
+    // business being shown to end users in a group chat. Log the real error
+    // for debugging and send back a friendly, generic fallback instead.
     console.error('generateAIReply error:', e);
-    return `${AI_BOT_NAME}: (${e.message}). Demo reply: ${DEMO_REPLIES[0]}`;
+    return `Sorry, I ran into a problem answering that just now. Please try again in a moment 🙏`;
   }
 }
 
-// RAG answer: contextChunks is an array of { text, fileName, score } from
-// services/rag.js retrieveContext(). Answers strictly from the provided
-// context and says so plainly when the context doesn't cover the question,
-// instead of letting the model quietly fall back to general knowledge.
+
 export async function generateRAGAnswer(question, contextChunks) {
   if (!contextChunks || contextChunks.length === 0) {
     return "I couldn't find anything relevant to that in the uploaded document(s). Try rephrasing, or upload a document that covers this topic.";
@@ -125,13 +138,11 @@ export async function generateRAGAnswer(question, contextChunks) {
     return reply || 'Could not generate an answer.';
   } catch (e) {
     console.error('generateRAGAnswer error:', e);
-    return `${AI_BOT_NAME}: (${e.message})`;
+    return `Sorry, I couldn't read through the document(s) just now. Please try again in a moment 🙏`;
   }
 }
 
-// Analyzes an uploaded photo. Only OpenAI's vision-capable model can actually
-// "see" the image; the free OpenRouter/Nemotron model is text-only, so we
-// fall back to an honest message instead of pretending to describe it.
+
 export async function analyzeImageContent(fileName, base64DataUrl) {
   if (!OPENAI_API_KEY && !OPENROUTER_API_KEY) {
     return `[Demo mode] ${AI_BOT_NAME}: Photo "${fileName}" received. Add EXPO_PUBLIC_OPENAI_API_KEY or EXPO_PUBLIC_OPENROUTER_API_KEY for real analysis.`;
@@ -174,7 +185,7 @@ export async function analyzeImageContent(fileName, base64DataUrl) {
     return data.choices?.[0]?.message?.content?.trim() || 'Could not analyze the image.';
   } catch (e) {
     console.error('analyzeImageContent error:', e);
-    return `${AI_BOT_NAME}: Could not analyze the image (${e.message}).`;
+    return `Sorry, I couldn't analyze that image just now. Please try again in a moment 🙏`;
   }
 }
 
@@ -210,7 +221,7 @@ export async function generateConversationSummary(messages) {
     return reply || 'Could not generate a summary.';
   } catch (e) {
     console.error('generateConversationSummary error:', e);
-    return `${AI_BOT_NAME}: (${e.message})`;
+    return `Sorry, I couldn't summarize this conversation just now. Please try again in a moment 🙏`;
   }
 }
 
@@ -233,6 +244,6 @@ export async function analyzeFileContent(fileName, textContent) {
     return reply || 'Analysis complete.';
   } catch (e) {
     console.error('analyzeFileContent error:', e);
-    return `Analysis error: ${e.message}`;
+    return `Sorry, I couldn't analyze that file just now. Please try again in a moment 🙏`;
   }
 }
