@@ -18,6 +18,14 @@ import * as ImageManipulator from 'expo-image-manipulator';
 
 const MAX_FILE_BYTES = 700 * 1024; // ~700KB raw -> ~950KB base64, safely under 1MiB
 const AVATAR_TARGET_BYTES = 300 * 1024; // final base64 size we aim the avatar under
+// Chat/AI photos were being read straight off the device at whatever size
+// ImagePicker returned (quality: 0.7 only reduces JPEG quality, not
+// dimensions — a modern phone photo is still several MB at that setting).
+// That meant almost every real photo blew past MAX_FILE_BYTES and got
+// rejected by fileToDataUri() before the AI ever saw it, which is why image
+// analysis in AI chat looked broken. Compress photos the same way avatars
+// already are, down to comfortably under MAX_FILE_BYTES, before upload.
+const CHAT_IMAGE_TARGET_BYTES = 650 * 1024;
 
 const sanitizeFileName = (fileName = 'file') =>
   String(fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -128,6 +136,33 @@ async function compressAvatar(uri) {
   throw new Error('Could not process this image. Please try a different photo.');
 }
 
+// Resizes + compresses a chat/AI-assistant photo on-device so it reliably
+// fits under MAX_FILE_BYTES no matter how large the original camera/gallery
+// photo was. Returns both the ready-to-store data URI and the raw base64
+// (no "data:" prefix) so callers that need to hand the image to a vision
+// AI model can build their own data URL without re-reading the file.
+async function compressChatImage(uri) {
+  let width = 1280;
+  let quality = 0.7;
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const result = await ImageManipulator.manipulateAsync(
+      uri,
+      [{ resize: { width } }],
+      { compress: quality, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+    );
+
+    const dataUri = `data:image/jpeg;base64,${result.base64}`;
+    const isLastAttempt = attempt === 5;
+    if (dataUri.length <= CHAT_IMAGE_TARGET_BYTES || isLastAttempt) {
+      return { dataUri, base64: result.base64 };
+    }
+
+    width = Math.max(320, Math.round(width * 0.75));
+    quality = Math.max(0.35, quality - 0.15);
+  }
+}
+
 export async function uploadAvatar(uid, uri) {
   if (!uid) throw new Error('User account is not available. Please log in again.');
 
@@ -147,8 +182,20 @@ export async function uploadChatFile(groupId, uri, fileName) {
 
 // Same as uploadChatFile but scoped to a user's personal AI Assistant
 // conversation (users/{uid}/aiChats/{chatId}) instead of a group.
-export async function uploadAIChatFile(userId, chatId, uri, fileName) {
+//
+// kind: 'image' | 'document'. Images are resized/compressed on-device first
+// (see compressChatImage) instead of being read at their original size,
+// since an uncompressed photo almost always exceeds MAX_FILE_BYTES. The
+// returned `base64` (image only) lets the caller send the same compressed
+// image straight to the vision AI without re-reading the file.
+export async function uploadAIChatFile(userId, chatId, uri, fileName, kind = 'document') {
   const safeName = sanitizeFileName(fileName || 'file');
+
+  if (kind === 'image') {
+    const { dataUri, base64 } = await compressChatImage(uri);
+    return { url: dataUri, fileName: safeName, base64 };
+  }
+
   const url = await fileToDataUri(uri, fileName, { maxBytes: MAX_FILE_BYTES });
   return { url, fileName: safeName };
 }

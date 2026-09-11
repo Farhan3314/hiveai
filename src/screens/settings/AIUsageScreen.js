@@ -9,6 +9,7 @@ import { useTheme } from '../../theme/ThemeContext';
 import { useAuth } from '../../context/AuthContext';
 import { PLANS } from '../../config';
 import { db } from '../../services/firebase';
+import { getUsageBreakdown, categoryLabel } from '../../services/usageTracking';
 
 export default function AIUsageScreen() {
   const { colors, typography, spacing, radius } = useTheme();
@@ -16,6 +17,9 @@ export default function AIUsageScreen() {
   const navigation = useNavigation();
   const [usage, setUsage] = useState(user?.aiTokensUsed || 0);
   const [plan, setPlan] = useState(user?.plan || 'free');
+  const [breakdown, setBreakdown] = useState({});
+  const [totals, setTotals] = useState({ totalTokens: 0, totalCost: 0, totalCalls: 0 });
+  const [loadingBreakdown, setLoadingBreakdown] = useState(true);
 
   useEffect(() => {
     if (!user?.uid) return;
@@ -28,8 +32,26 @@ export default function AIUsageScreen() {
     return unsub;
   }, [user?.uid]);
 
+  // Real per-category token/cost breakdown (README Phase 3: "AI Cost &
+  // Analytics"), sourced from the aiUsageLogs written by every AI call.
+  useEffect(() => {
+    if (!user?.uid) return;
+    let cancelled = false;
+    setLoadingBreakdown(true);
+    getUsageBreakdown(user.uid).then((result) => {
+      if (cancelled) return;
+      setBreakdown(result.breakdown);
+      setTotals(result);
+      setLoadingBreakdown(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid]);
+
   const limit = PLANS[plan]?.aiLimit || 50;
   const percent = Math.min((usage / limit) * 100, 100);
+  const breakdownEntries = Object.entries(breakdown).sort((a, b) => b[1].calls - a[1].calls);
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]} edges={['top']}>
@@ -76,21 +98,47 @@ export default function AIUsageScreen() {
         </View>
 
         <View style={[styles.card, { backgroundColor: colors.surface, borderRadius: radius.lg, marginTop: spacing.md }]}>
-          <Text style={[typography.bodyBold, { color: colors.textPrimary }]}>Usage breakdown</Text>
-          {[
-            { label: 'Chat @HiveAI mentions', icon: 'chatbubble' },
-            { label: 'Conversation summaries', icon: 'document-text' },
-            { label: 'File analysis', icon: 'document' },
-            { label: 'AI Assistant tab', icon: 'sparkles' },
-          ].map((item) => (
-            <View key={item.label} style={styles.usageRow}>
-              <Ionicons name={item.icon} size={18} color={colors.textMuted} />
-              <Text style={[typography.body, { color: colors.textSecondary, marginLeft: 10, flex: 1 }]}>
-                {item.label}
-              </Text>
-              <Ionicons name="checkmark" size={16} color={colors.success} />
-            </View>
-          ))}
+          <View style={styles.cardHeader}>
+            <Text style={[typography.bodyBold, { color: colors.textPrimary, flex: 1 }]}>Usage breakdown</Text>
+            <Text style={[typography.caption, { color: colors.textMuted }]}>This month</Text>
+          </View>
+
+          {loadingBreakdown ? (
+            <Text style={[typography.caption, { color: colors.textMuted, marginTop: 12 }]}>Loading...</Text>
+          ) : breakdownEntries.length === 0 ? (
+            <Text style={[typography.caption, { color: colors.textMuted, marginTop: 12 }]}>
+              No AI activity yet this month.
+            </Text>
+          ) : (
+            breakdownEntries.map(([cat, stats]) => {
+              const { label, icon } = categoryLabel(cat);
+              return (
+                <View key={cat} style={styles.usageRow}>
+                  <Ionicons name={icon} size={18} color={colors.textMuted} />
+                  <Text style={[typography.body, { color: colors.textSecondary, marginLeft: 10, flex: 1 }]}>
+                    {label}
+                  </Text>
+                  <Text style={[typography.caption, { color: colors.textPrimary }]}>
+                    {stats.calls} call{stats.calls === 1 ? '' : 's'} · {stats.tokens.toLocaleString()} tok
+                  </Text>
+                </View>
+              );
+            })
+          )}
+        </View>
+
+        <View style={[styles.card, { backgroundColor: colors.surface, borderRadius: radius.lg, marginTop: spacing.md }]}>
+          <Text style={[typography.bodyBold, { color: colors.textPrimary }]}>Estimated cost</Text>
+          <Text style={[typography.caption, { color: colors.textSecondary, marginTop: 6 }]}>
+            Based on tokens used across free/paid AI models this month. Free-tier models (used by default)
+            cost $0 — this becomes meaningful once a paid model is configured.
+          </Text>
+          <Text style={[typography.h3, { color: colors.textPrimary, marginTop: 10 }]}>
+            ${totals.totalCost.toFixed(4)}
+          </Text>
+          <Text style={[typography.caption, { color: colors.textMuted, marginTop: 2 }]}>
+            {totals.totalCalls} AI call{totals.totalCalls === 1 ? '' : 's'} · {totals.totalTokens.toLocaleString()} tokens total
+          </Text>
         </View>
       </ScrollView>
     </SafeAreaView>

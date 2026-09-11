@@ -144,7 +144,7 @@ export default function FriendsScreen() {
       <View style={styles.header}>
         <Text style={[typography.h2, { color: colors.textPrimary, flex: 1 }]}>Friends</Text>
         {requests.length > 0 && (
-          <View style={[styles.badge, { backgroundColor: colors.danger || '#FF5C7C' }]}>
+          <View style={[styles.badge, { backgroundColor: colors.danger }]}>
             <Text style={styles.badgeText}>{requests.length}</Text>
           </View>
         )}

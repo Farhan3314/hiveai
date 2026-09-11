@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ActivityIndicator, Pressable, Linking, Image, M
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeContext';
 
-export default function MessageBubble({ message, isOwn }) {
+export default function MessageBubble({ message, isOwn, onEdit }) {
   const { colors, typography, radius, spacing } = useTheme();
   const isAI = message.senderId === 'hiveai' || message.type === 'ai';
   const isTyping = message.type === 'ai_typing';
@@ -27,6 +27,17 @@ export default function MessageBubble({ message, isOwn }) {
 
   const bubbleBg = isAI ? colors.bubbleAI : isOwn ? colors.bubbleUser : colors.surfaceAlt;
   const textColor = isAI ? colors.bubbleAIText : isOwn ? colors.bubbleUserText : colors.textPrimary;
+
+  // Only your own plain text messages can be edited — not photos/files
+  // (those would need a re-upload) and not the AI's replies.
+  const canEdit = isOwn && message.type === 'text' && typeof onEdit === 'function';
+  const handleLongPress = () => {
+    if (!canEdit) return;
+    Alert.alert('Message options', undefined, [
+      { text: 'Edit', onPress: () => onEdit(message) },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
 
   // Attachments are stored as base64 "data:" URIs on the Firestore doc itself
   // (see services/storage.js — Firebase Storage/paid plan was removed).
@@ -63,6 +74,7 @@ export default function MessageBubble({ message, isOwn }) {
           </Text>
         )}
         <View style={[styles.bubble, { backgroundColor: bubbleBg, borderRadius: radius.lg }]}>
+          <Pressable onLongPress={handleLongPress} disabled={!canEdit}>
           {isAI && !!message.replyToSenderName && (
             <View
               style={[
@@ -117,6 +129,25 @@ export default function MessageBubble({ message, isOwn }) {
           ) : (
             <Text style={[typography.body, { color: textColor }]}>{message.text}</Text>
           )}
+          {!!message.edited && (
+            <Text style={[typography.small, { color: textColor, opacity: 0.6, marginTop: 2 }]}>edited</Text>
+          )}
+          {isAI && !!message.sources?.length && (
+            <View
+              style={[
+                styles.sourcesBox,
+                { borderTopColor: colors.border, marginTop: 8, paddingTop: 8 },
+              ]}
+            >
+              <Text style={[typography.small, { color: colors.textMuted, marginBottom: 2 }]}>Sources</Text>
+              {message.sources.map((s) => (
+                <Text key={s.fileName} style={[typography.small, { color: colors.aiAccent }]}>
+                  [{s.refIndex}] {s.fileName} · {Math.round((s.score || 0) * 100)}% match
+                </Text>
+              ))}
+            </View>
+          )}
+          </Pressable>
         </View>
       </View>
     </View>
@@ -131,6 +162,7 @@ const styles = StyleSheet.create({
   typingRow: { flexDirection: 'row', alignItems: 'center' },
   fileRow: { flexDirection: 'row', alignItems: 'center' },
   replyToBar: { borderLeftWidth: 2, paddingLeft: 8 },
+  sourcesBox: { borderTopWidth: StyleSheet.hairlineWidth },
   image: { width: 220, height: 220 },
   previewOverlay: {
     flex: 1,

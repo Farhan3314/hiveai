@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '../../theme/ThemeContext';
 import Button from '../../components/Button';
 
@@ -12,17 +12,17 @@ export default function SplashScreen({ navigation }) {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={styles.top}>
-        {/* Logo mark */}
+        {/* Logo mark — a honeycomb cell, not a generic app-icon shape */}
         <View
           style={[
             styles.logoBadge,
             { borderColor: colors.primary, backgroundColor: colors.surface },
           ]}
         >
-          <Ionicons name="disc-outline" size={40} color={colors.primary} />
+          <MaterialCommunityIcons name="hexagon-outline" size={40} color={colors.primary} />
         </View>
 
-        <Text style={[typography.h1, { color: colors.textPrimary, marginTop: spacing.lg }]}>
+        <Text style={[typography.display, { color: colors.textPrimary, marginTop: spacing.lg }]}>
           Hive<Text style={{ color: colors.primary }}>AI</Text>
         </Text>
 

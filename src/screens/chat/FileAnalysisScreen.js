@@ -20,6 +20,7 @@ import { generateRAGAnswer, aiLimitReachedMessage } from '../../services/ai';
 import { ingestDocument, retrieveContext, isRAGSupported } from '../../services/rag';
 import { embeddingsAvailable } from '../../services/embeddings';
 import { incrementAIUsage, checkAIUsageLimit } from '../../services/users';
+import { logAIUsage } from '../../services/usageTracking';
 import { RAG_SUPPORTED_EXTENSIONS } from '../../config';
 
 // STAGE constants drive the "Uploading -> Processing -> Completed" status
@@ -38,7 +39,7 @@ export default function FileAnalysisScreen() {
   const { user } = useAuth();
   const navigation = useNavigation();
   const route = useRoute();
-  const { fileName, fileUrl, fileUri, groupId, aiChatId } = route.params || {};
+  const { fileName, fileUrl, fileUri, groupId, aiChatId, initialQuestion } = route.params || {};
 
   const scopePath = groupId ? `groups/${groupId}` : `users/${user.uid}/aiChats/${aiChatId}`;
 
@@ -48,6 +49,7 @@ export default function FileAnalysisScreen() {
   const [qa, setQa] = useState([]); // { id, question, answer, loading }
   const [question, setQuestion] = useState('');
   const listRef = useRef(null);
+  const askedInitialQuestion = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -117,26 +119,44 @@ export default function FileAnalysisScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fileUri, fileName]);
 
-  const handleAsk = async () => {
-    const trimmed = question.trim();
+  // Extracted so it can be triggered either by the user pressing send, or
+  // automatically once the doc finishes processing if they already typed a
+  // prompt before it was uploaded (see initialQuestion below).
+  const handleAsk = async (overrideQuestion) => {
+    const trimmed = (overrideQuestion ?? question).trim();
     if (!trimmed || stage !== STAGE.READY) return;
 
     const entryId = `${Date.now()}`;
-    setQa((prev) => [...prev, { id: entryId, question: trimmed, answer: '', loading: true }]);
+    setQa((prev) => [...prev, { id: entryId, question: trimmed, answer: '', sources: [], loading: true }]);
     setQuestion('');
     setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
 
     try {
       const { allowed, plan, limit } = await checkAIUsageLimit(user.uid).catch(() => ({ allowed: true }));
       let answer;
+      let sources = [];
       if (!allowed) {
         answer = aiLimitReachedMessage(plan, limit);
       } else {
         const chunks = await retrieveContext({ scopePath, docId, question: trimmed, topK: 4 });
-        answer = await generateRAGAnswer(trimmed, chunks);
+        const result = await generateRAGAnswer(trimmed, chunks);
+        answer = result.text;
+        sources = result.sources;
         await incrementAIUsage(user.uid, 1).catch(() => {});
+        await logAIUsage({
+          userId: user.uid,
+          groupId,
+          chatId: aiChatId,
+          category: 'file_analysis',
+          model: 'file-qa',
+          inputText: trimmed,
+          outputText: answer,
+          subscriptionPlan: plan,
+        });
       }
-      setQa((prev) => prev.map((item) => (item.id === entryId ? { ...item, answer, loading: false } : item)));
+      setQa((prev) =>
+        prev.map((item) => (item.id === entryId ? { ...item, answer, sources, loading: false } : item))
+      );
     } catch (e) {
       console.error('FileAnalysis ask error:', e);
       setQa((prev) =>
@@ -150,6 +170,17 @@ export default function FileAnalysisScreen() {
       setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
     }
   };
+
+  // If the user typed a prompt while the document was still "on hold" in
+  // the AI chat, ask it automatically the moment processing finishes,
+  // instead of silently dropping it.
+  useEffect(() => {
+    if (stage === STAGE.READY && initialQuestion?.trim() && !askedInitialQuestion.current) {
+      askedInitialQuestion.current = true;
+      handleAsk(initialQuestion);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, initialQuestion]);
 
   const isBusy = stage === STAGE.READING || stage === STAGE.PROCESSING;
   const isBlocked = stage === STAGE.ERROR || stage === STAGE.UNSUPPORTED;
@@ -215,9 +246,23 @@ export default function FileAnalysisScreen() {
                 {item.loading ? (
                   <ActivityIndicator size="small" color={colors.primary} />
                 ) : (
-                  <Text style={[typography.body, { color: colors.textPrimary, lineHeight: 22 }]}>
-                    {item.answer}
-                  </Text>
+                  <>
+                    <Text style={[typography.body, { color: colors.textPrimary, lineHeight: 22 }]}>
+                      {item.answer}
+                    </Text>
+                    {!!item.sources?.length && (
+                      <View style={{ marginTop: 10, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }}>
+                        <Text style={[typography.small, { color: colors.textMuted, marginBottom: 4 }]}>
+                          Sources
+                        </Text>
+                        {item.sources.map((s) => (
+                          <Text key={s.fileName} style={[typography.small, { color: colors.aiAccent }]}>
+                            [{s.refIndex}] {s.fileName} · {Math.round(s.score * 100)}% match
+                          </Text>
+                        ))}
+                      </View>
+                    )}
+                  </>
                 )}
               </View>
             </View>

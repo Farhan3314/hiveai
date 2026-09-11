@@ -57,7 +57,7 @@ export function subscribeAIChatMessages(userId, chatId, callback) {
 export async function addAIChatMessage(
   userId,
   chatId,
-  { senderId, senderName, type, text, fileUrl, fileName }
+  { senderId, senderName, type, text, fileUrl, fileName, sources }
 ) {
   const msg = {
     senderId,
@@ -70,6 +70,11 @@ export async function addAIChatMessage(
     msg.fileUrl = fileUrl;
     msg.fileName = fileName;
   }
+  // RAG source citations (README Phase 4) — which uploaded document(s) an
+  // AI answer was grounded in.
+  if (sources && sources.length) {
+    msg.sources = sources;
+  }
 
   await addDoc(messagesRef(userId, chatId), msg);
 
@@ -78,6 +83,19 @@ export async function addAIChatMessage(
     lastMessage: (preview || '').slice(0, 100),
     updatedAt: serverTimestamp(),
   });
+}
+
+export async function updateAIChatMessage(userId, chatId, messageId, updates) {
+  await updateDoc(doc(db, 'users', userId, 'aiChats', chatId, 'messages', messageId), updates);
+}
+
+// Removes a set of messages by id — used when editing a message to wipe out
+// the (now stale) AI reply and anything sent after it, since they no longer
+// match the edited text.
+export async function deleteAIChatMessages(userId, chatId, messageIds) {
+  await Promise.all(
+    messageIds.map((id) => deleteDoc(doc(db, 'users', userId, 'aiChats', chatId, 'messages', id)))
+  );
 }
 
 export async function deleteAIChat(userId, chatId) {

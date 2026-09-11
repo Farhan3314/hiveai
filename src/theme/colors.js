@@ -1,83 +1,97 @@
-// HiveAI Design Tokens
-// Derived from the provided UI screens: deep navy/indigo background,
-// violet/purple primary accent, soft lavender text on dark surfaces.
+// HiveAI Design Tokens — "Ink & Honeycomb"
+//
+// Every previous purple-on-navy palette read like generic AI-SaaS chrome —
+// it could have belonged to any chat app. This one is built from the
+// product's own name: a hive is a warm, amber, handmade thing built by a
+// collective — that's the human/brand side (honey). The AI living inside it
+// is the cool, precise counterpart (teal). The two accents are deliberately
+// different hues (not two shades of one color) so a message's origin —
+// person or HiveAI — is legible by color alone, before you even read who
+// sent it.
+//
+// Backgrounds lean warm ink/paper rather than blue-black/blue-white, so nothing
+// here reads as the default "dark mode navy" every other app already uses.
 
 export const darkTheme = {
   mode: 'dark',
 
-  // Backgrounds
-  background: '#0B0B18',       // app background (near-black indigo)
-  surface: '#14142B',          // cards, inputs, message bubbles (bot)
-  surfaceAlt: '#1C1C3A',       // elevated cards / list items
-  border: '#2A2A4A',
+  // Backgrounds — warm ink, not navy
+  background: '#14110C',
+  surface: '#1E1911',
+  surfaceAlt: '#2A2317',
+  border: '#3E3320',
 
-  // Brand / accent
-  primary: '#6C5CE7',          // main purple (buttons, links, active tab)
-  primaryPressed: '#5A4BD1',
-  primaryGradientStart: '#7B6CF6',
-  primaryGradientEnd: '#5A4BD1',
+  // Brand / accent — honeycomb amber (human actions: buttons, links, your own messages)
+  primary: '#E3A23A',
+  primaryPressed: '#C7871F',
+  primaryGradientStart: '#F0BC5D',
+  primaryGradientEnd: '#C7871F',
 
   // Text
-  textPrimary: '#FFFFFF',
-  textSecondary: '#A0A0C0',
-  textMuted: '#6B6B8D',
-  textOnPrimary: '#FFFFFF',
+  textPrimary: '#F6EFE1',
+  textSecondary: '#BDAD8E',
+  textMuted: '#7C7057',
+  textOnPrimary: '#221806',
 
-  // Chat bubbles
-  bubbleUser: '#6C5CE7',
-  bubbleUserText: '#FFFFFF',
-  bubbleAI: '#1C1C3A',
-  bubbleAIText: '#E4E4F5',
-  aiAccent: '#8B7CF6',         // "HiveAI" name label, AI icon glow
+  // Chat bubbles — honey for people, teal for HiveAI (a functional distinction,
+  // not decoration: you can tell who's speaking from color alone)
+  bubbleUser: '#E3A23A',
+  bubbleUserText: '#221806',
+  bubbleAI: '#152825',
+  bubbleAIText: '#DCF1EE',
+  aiAccent: '#4CC2B9',
 
   // Status
-  success: '#3ED598',
-  warning: '#F5A623',
-  danger: '#FF5C7C',
-  online: '#3ED598',
+  success: '#5FB86B',
+  warning: '#D97C3F',
+  danger: '#E2604A',
+  online: '#5FB86B',
 
   // Misc
-  divider: '#22223F',
-  overlay: 'rgba(0,0,0,0.6)',
-  inputBackground: '#14142B',
-  tabBarBackground: '#0F0F22',
-  shadow: 'rgba(108, 92, 231, 0.25)',
+  divider: '#291F11',
+  overlay: 'rgba(10, 7, 3, 0.65)',
+  inputBackground: '#1E1911',
+  tabBarBackground: '#100D08',
+  shadow: 'rgba(227, 162, 58, 0.22)',
 };
 
 export const lightTheme = {
   mode: 'light',
 
-  background: '#F7F7FC',
+  // Backgrounds — warm paper, not cool white
+  background: '#FBF7EE',
   surface: '#FFFFFF',
-  surfaceAlt: '#F0F0FA',
-  border: '#E4E4F0',
+  surfaceAlt: '#F4EAD5',
+  border: '#E7D8B8',
 
-  primary: '#6C5CE7',
-  primaryPressed: '#5A4BD1',
-  primaryGradientStart: '#7B6CF6',
-  primaryGradientEnd: '#5A4BD1',
+  // Brand / accent — deepened for contrast on a light, warm ground
+  primary: '#B3791E',
+  primaryPressed: '#93620F',
+  primaryGradientStart: '#CB9333',
+  primaryGradientEnd: '#93620F',
 
-  textPrimary: '#14142B',
-  textSecondary: '#5B5B7A',
-  textMuted: '#9494B0',
-  textOnPrimary: '#FFFFFF',
+  // Text
+  textPrimary: '#241C10',
+  textSecondary: '#5C5038',
+  textMuted: '#8D8065',
+  textOnPrimary: '#FFFCF5',
 
-  bubbleUser: '#6C5CE7',
-  bubbleUserText: '#FFFFFF',
-  bubbleAI: '#F0F0FA',
-  bubbleAIText: '#2A2A45',
-  aiAccent: '#6C5CE7',
+  bubbleUser: '#B3791E',
+  bubbleUserText: '#FFFCF5',
+  bubbleAI: '#E7F4F1',
+  bubbleAIText: '#123B37',
+  aiAccent: '#1D8478',
 
-  success: '#1FAE72',
-  warning: '#DB8B12',
-  danger: '#E23B5C',
-  online: '#1FAE72',
+  success: '#2E8E4E',
+  warning: '#AA5E17',
+  danger: '#C14634',
+  online: '#2E8E4E',
 
-  divider: '#ECECF6',
-  overlay: 'rgba(0,0,0,0.4)',
-  inputBackground: '#F0F0FA',
+  divider: '#EFE3C7',
+  overlay: 'rgba(36, 28, 16, 0.4)',
+  inputBackground: '#F4EAD5',
   tabBarBackground: '#FFFFFF',
-  shadow: 'rgba(108, 92, 231, 0.15)',
+  shadow: 'rgba(179, 121, 30, 0.16)',
 };
 
 export const spacing = {
@@ -89,20 +103,29 @@ export const spacing = {
   xxl: 48,
 };
 
+// Radius is assigned by role, not applied uniformly: pills for
+// fully-rounded controls, a slightly tighter curve for compact chrome
+// (inputs, small chips), a softer one for bubbles/cards, and a near-flat
+// corner for large surfaces — so hierarchy comes from shape, not just size.
 export const radius = {
-  sm: 8,
+  sm: 6,
   md: 12,
-  lg: 16,
-  xl: 24,
+  lg: 18,
+  xl: 26,
   pill: 999,
 };
 
+// Type scale follows a ~1.25 ratio between steps (a classic, deliberate
+// scale rather than round numbers), with letter-spacing tightened slightly
+// on larger sizes and opened slightly on small caption/label text — the
+// kind of hand-tuned detail that a default system scale skips.
 export const typography = {
-  h1: { fontSize: 28, fontWeight: '700' },
-  h2: { fontSize: 22, fontWeight: '700' },
-  h3: { fontSize: 18, fontWeight: '600' },
-  body: { fontSize: 15, fontWeight: '400' },
-  bodyBold: { fontSize: 15, fontWeight: '600' },
-  caption: { fontSize: 13, fontWeight: '400' },
-  small: { fontSize: 11, fontWeight: '400' },
+  display: { fontSize: 34, fontWeight: '700', letterSpacing: -0.4, lineHeight: 40 },
+  h1: { fontSize: 27, fontWeight: '700', letterSpacing: -0.3, lineHeight: 33 },
+  h2: { fontSize: 21, fontWeight: '700', letterSpacing: -0.2, lineHeight: 27 },
+  h3: { fontSize: 17, fontWeight: '600', letterSpacing: -0.1, lineHeight: 22 },
+  body: { fontSize: 15, fontWeight: '400', lineHeight: 21 },
+  bodyBold: { fontSize: 15, fontWeight: '600', lineHeight: 21 },
+  caption: { fontSize: 13, fontWeight: '400', lineHeight: 18 },
+  small: { fontSize: 11.5, fontWeight: '500', letterSpacing: 0.15, lineHeight: 15 },
 };

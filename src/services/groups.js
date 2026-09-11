@@ -16,12 +16,15 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 
+// Palette drawn from the app's own brand tokens (honey/teal) plus a couple
+// of warm neighbors — variety for telling groups apart at a glance, without
+// reintroducing the generic purple this app used to default to everywhere.
 const GROUP_ICONS = [
-  { icon: 'people', iconBg: '#6C5CE7' },
-  { icon: 'school-outline', iconBg: '#3ED598' },
-  { icon: 'flame-outline', iconBg: '#F5A623' },
-  { icon: 'happy-outline', iconBg: '#FF5C7C' },
-  { icon: 'rocket-outline', iconBg: '#8B7CF6' },
+  { icon: 'people', iconBg: '#E3A23A' },
+  { icon: 'school-outline', iconBg: '#4CC2B9' },
+  { icon: 'flame-outline', iconBg: '#C1583B' },
+  { icon: 'happy-outline', iconBg: '#D9B44A' },
+  { icon: 'rocket-outline', iconBg: '#7A8C4E' },
 ];
 
 function pickRandomIcon() {

@@ -1,134 +1,965 @@
-# HiveAI — Mobile App
+# HiveAI --- AI Group Chat Mobile App
 
-Collaborate. Chat. Create. With AI.
+> **Collaborate. Chat. Create. With AI.**
 
-## What's included
+HiveAI is a mobile-first AI collaboration platform built with **React
+Native and Expo**. It combines real-time group chat, an AI assistant,
+document-based Q&A (RAG), friends, notifications, file sharing, and
+subscription-ready AI usage management in one application.
 
-- **Expo SDK 57** (React Native 0.86 / React 19.2) mobile app
-- **Firebase** — Auth, Firestore (real-time), Storage
-- **Theme system** — Dark/light mode with persistence
-- **Auth flow** — Splash, Login, Sign Up, Forgot Password
-- **Dashboard** — Groups list with search + create group
-- **Friends** — Send/accept requests by email, tabs (All / Requests / Sent)
-- **Group Chat** — Real-time messages via Firestore, file attachments
-- **AI in every group chat** — HiveAI reads and replies to every text message sent in a group (mentioning `@HiveAI` / `@AI` still works too — it just strips the mention before sending the prompt)
-- **AI Assistant tab** — Standalone 1:1 chat with HiveAI
-- **File Analysis** — Upload + AI analysis of documents
-- **Notifications** — Friend requests, AI replies, etc.
-- **Subscription plans** — Free / Pro / Team (demo activation)
-- **AI Usage tracking** — Monthly usage meter per plan
-- **Profile & Settings** — Edit profile, account, privacy, help
+------------------------------------------------------------------------
 
-## Setup
+## ✨ Project Overview
 
-### Step 1: Create environment file
+HiveAI allows users to:
 
-Copy `.env.example` to `.env` and fill in your values:
+-   Create and manage collaborative groups
+-   Invite and communicate with friends
+-   Chat in real time
+-   Get AI responses directly inside group conversations
+-   Use HiveAI as a standalone 1:1 AI assistant
+-   Upload supported documents and ask questions about them
+-   Store and retrieve document chunks using RAG
+-   Track monthly AI usage
+-   Use Free, Pro, Team, and Demo subscription experiences
+-   Manage profile, privacy, account, and application settings
+-   Receive notifications for important activity
 
-```bash
+### Core product idea
+
+``` text
+User
+  ↓
+Create / Join Group
+  ↓
+Group Chat
+  ↓
+Friends + Files + AI
+  ↓
+HiveAI understands the conversation
+  ↓
+AI response / RAG answer
+```
+
+------------------------------------------------------------------------
+
+# 🚀 Main Features
+
+## 1. Authentication
+
+Complete authentication flow:
+
+-   Splash screen
+-   Login
+-   Sign Up
+-   Forgot Password
+-   Create New Password
+-   Persistent Firebase authentication session
+-   Logout
+
+Authentication is powered by **Firebase Authentication**.
+
+------------------------------------------------------------------------
+
+## 2. Dashboard / Home
+
+The Home screen provides:
+
+-   Groups list
+-   Group search
+-   Create group
+-   Group navigation
+-   Theme-aware UI
+-   Quick access to the application's main features
+
+------------------------------------------------------------------------
+
+## 3. Friends
+
+Users can connect with other registered users using email.
+
+Supported flows:
+
+-   Send friend request
+-   Accept request
+-   Reject request
+-   View all friends
+-   View received requests
+-   View sent requests
+-   Search by registered email
+
+Friend data is stored in Firestore.
+
+------------------------------------------------------------------------
+
+## 4. Real-Time Group Chat
+
+HiveAI provides collaborative real-time group messaging.
+
+Features include:
+
+-   Real-time messages
+-   Firestore listeners
+-   User avatars
+-   Message bubbles
+-   AI messages
+-   File attachments
+-   Group members
+-   Conversation summary
+-   AI typing state
+-   Message timestamps
+
+No Socket.io server is required for the current real-time messaging
+implementation.
+
+``` text
+User A ──┐
+User B ──┼──→ Firestore ←──→ HiveAI
+User C ──┘
+```
+
+------------------------------------------------------------------------
+
+## 5. AI Inside Group Chat
+
+HiveAI can participate directly in group conversations.
+
+Normal text messages can be processed by the AI according to the
+application's AI flow.
+
+Explicit AI mentions are also supported:
+
+``` text
+@HiveAI explain this problem
+```
+
+or:
+
+``` text
+@AI summarize this discussion
+```
+
+The mention is removed before the prompt is sent to the AI provider.
+
+### AI flow
+
+``` text
+Group Message
+     ↓
+AI Processing
+     ↓
+Conversation / RAG Context
+     ↓
+AI Provider
+     ↓
+HiveAI Response
+     ↓
+Group Chat
+```
+
+------------------------------------------------------------------------
+
+## 6. AI Assistant
+
+The AI Assistant provides a standalone 1:1 conversation with HiveAI.
+
+Users can:
+
+-   Ask questions
+-   Continue conversations
+-   Receive AI-generated answers
+-   Use uploaded documents as context
+-   Use the same AI/RAG infrastructure independently of group chat
+
+------------------------------------------------------------------------
+
+# 📄 7. File Sharing & Document Analysis
+
+Users can attach supported files from Group Chat or the AI Assistant.
+
+Current document-oriented RAG support includes:
+
+-   `.txt`
+-   `.md`
+-   `.csv`
+-   `.json`
+-   `.log`
+
+### Current limitation
+
+PDF and DOCX text extraction is intentionally not handled by the current
+plain Expo Go implementation.
+
+For those formats, export the document as `.txt` before uploading, or
+introduce a backend/native extraction service in a future production
+version.
+
+------------------------------------------------------------------------
+
+# 🧠 8. RAG --- Document Q&A
+
+HiveAI includes a client-side Retrieval-Augmented Generation pipeline
+using **LangChain.js text splitting** and OpenRouter embeddings.
+
+### RAG pipeline
+
+``` text
+Document
+   ↓
+Document Picker
+   ↓
+Firebase Storage
+   ↓
+LangChain Text Splitter
+   ↓
+Document Chunks
+   ↓
+OpenRouter Embeddings
+   ↓
+Vectors
+   ↓
+Firestore
+   ↓
+Cosine Similarity Retrieval
+   ↓
+Relevant Passages
+   ↓
+AI Model
+   ↓
+Grounded Answer
+```
+
+Current embedding model:
+
+``` text
+nvidia/nemotron-3-embed-1b:free
+```
+
+Document chunks and vectors are stored under the application's RAG
+document structure, including:
+
+``` text
+ragDocuments/{docId}/chunks
+```
+
+The AI uses retrieved passages as context when answering
+document-related questions.
+
+------------------------------------------------------------------------
+
+# 💳 9. Subscription System
+
+HiveAI includes a subscription experience with:
+
+-   Free
+-   Pro
+-   Team
+-   Demo mode
+
+The current application includes subscription screens and usage
+management.
+
+## Recommended production subscription architecture
+
+For a production release, subscription status should be validated
+server-side rather than trusted from the mobile client.
+
+Recommended model:
+
+``` text
+Mobile App
+    ↓
+Subscription Provider
+    ↓
+Verified Entitlement
+    ↓
+HiveAI Backend
+    ↓
+Group Subscription
+    ↓
+AI Usage Limits
+```
+
+Because HiveAI is designed around collaborative groups, subscription
+ownership should be **group-wise**, rather than requiring every group
+member to purchase an individual subscription.
+
+### Example plans
+
+  Plan               Groups   AI Usage RAG        Team Features
+  ------ ------------------ ---------- ---------- ---------------
+  Free              Limited    Limited Basic      Basic
+  Pro                  More     Higher Yes        Yes
+  Team     High / Unlimited       High Advanced   Advanced
+  Demo                 Demo     Sample Limited    Demo
+
+> Pricing, limits, and provider entitlements should be configured
+> according to the final business model before production launch.
+
+------------------------------------------------------------------------
+
+# 📊 10. AI Usage Tracking
+
+HiveAI includes monthly AI usage tracking.
+
+The usage system can be used to display:
+
+``` text
+AI Usage
+
+1,420 / 2,000
+
+████████████░░░░
+
+580 remaining
+```
+
+For production, usage enforcement should be handled by the backend.
+
+Recommended tracked fields:
+
+``` text
+userId
+groupId
+subscriptionId
+model
+inputTokens
+outputTokens
+totalTokens
+estimatedCost
+createdAt
+```
+
+This makes it possible to monitor both user usage and AI operating cost.
+
+------------------------------------------------------------------------
+
+# 🔔 11. Notifications
+
+The application supports notification flows for events such as:
+
+-   Friend requests
+-   Friend request updates
+-   AI replies
+-   Group activity
+-   Other important application events
+
+Expo notifications are used for mobile notification functionality.
+
+------------------------------------------------------------------------
+
+# 👤 12. Profile & Settings
+
+Users can manage:
+
+-   Profile
+-   Edit profile
+-   Account
+-   Privacy & Security
+-   Help & Support
+-   AI Usage
+-   Subscription
+-   Theme
+
+------------------------------------------------------------------------
+
+# 🌗 13. Theme System
+
+HiveAI supports:
+
+-   Light mode
+-   Dark mode
+-   Persistent theme preference
+-   Theme-aware components and screens
+
+The theme system is implemented using shared design tokens and a
+`ThemeContext`.
+
+------------------------------------------------------------------------
+
+# 🛠 Tech Stack
+
+## Mobile
+
+-   React Native
+-   Expo SDK 57
+-   React 19
+-   React Native 0.86
+-   React Navigation
+-   Expo Dev Client
+-   Expo Notifications
+-   Expo Document Picker
+-   Expo Image Picker
+-   Expo Image Manipulator
+-   React Native Safe Area Context
+
+## Backend / Cloud Services
+
+-   Firebase Authentication
+-   Firebase Firestore
+-   Firebase Storage
+
+## AI
+
+-   OpenAI
+-   OpenRouter
+-   LangChain.js
+-   `@langchain/textsplitters`
+-   Embeddings
+-   Retrieval-Augmented Generation (RAG)
+-   Cosine similarity retrieval
+
+## Local Persistence
+
+-   AsyncStorage
+
+## Development
+
+-   JavaScript
+-   TypeScript configuration
+-   Babel
+-   Metro
+-   npm
+-   EAS Build
+
+------------------------------------------------------------------------
+
+# 📁 Project Structure
+
+``` text
+HiveAI/
+│
+├── App.js
+├── index.ts
+├── app.json
+├── babel.config.js
+├── metro.config.js
+├── eas.json
+├── package.json
+├── tsconfig.json
+├── .env.example
+├── .gitignore
+├── LICENSE
+├── README.md
+│
+├── assets/
+│
+└── src/
+    │
+    ├── components/
+    │   ├── Avatar.js
+    │   ├── Button.js
+    │   ├── FormInput.js
+    │   └── MessageBubble.js
+    │
+    ├── config.js
+    │
+    ├── context/
+    │   └── AuthContext.js
+    │
+    ├── navigation/
+    │   ├── AuthNavigator.js
+    │   ├── MainTabNavigator.js
+    │   └── RootNavigator.js
+    │
+    ├── screens/
+    │   ├── auth/
+    │   ├── chat/
+    │   ├── main/
+    │   ├── onboarding/
+    │   └── settings/
+    │
+    ├── services/
+    │   ├── ai.js
+    │   ├── aiChats.js
+    │   ├── embeddings.js
+    │   ├── firebase.js
+    │   ├── friends.js
+    │   ├── groups.js
+    │   ├── messages.js
+    │   ├── notifications.js
+    │   ├── push.js
+    │   ├── rag.js
+    │   ├── storage.js
+    │   └── users.js
+    │
+    ├── theme/
+    │   ├── colors.js
+    │   └── ThemeContext.js
+    │
+    └── utils/
+        └── user.js
+```
+
+------------------------------------------------------------------------
+
+# ⚙️ Installation & Setup
+
+## Prerequisites
+
+Install:
+
+-   Node.js
+-   npm
+-   Expo CLI / EAS CLI as required
+-   Firebase project
+-   OpenAI API key and/or OpenRouter API key for real AI features
+
+------------------------------------------------------------------------
+
+## Step 1 --- Clone / Open Project
+
+``` bash
+cd HiveAI
+```
+
+------------------------------------------------------------------------
+
+## Step 2 --- Install Dependencies
+
+``` bash
+npm install
+```
+
+------------------------------------------------------------------------
+
+# 🔐 Step 3 --- Environment Variables
+
+Create `.env` from `.env.example`.
+
+``` bash
 cp .env.example .env
 ```
 
-Example:
+Configure Firebase:
 
-```env
+``` env
 EXPO_PUBLIC_FIREBASE_API_KEY=your_firebase_api_key
 EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
 EXPO_PUBLIC_FIREBASE_PROJECT_ID=your-project-id
 EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=your-project.appspot.com
 EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=1234567890
 EXPO_PUBLIC_FIREBASE_APP_ID=1:1234567890:web:abcdef123456
-
-EXPO_PUBLIC_OPENAI_API_KEY=sk-your-key-here
-EXPO_PUBLIC_OPENROUTER_API_KEY=your_openrouter_key_optional
 ```
 
-### Step 2: Firebase
+AI provider variables:
 
-In the Firebase Console, enable:
-- **Authentication → Email/Password**
-- **Firestore Database**
-- **Storage**
+``` env
+EXPO_PUBLIC_OPENAI_API_KEY=your_openai_key
+EXPO_PUBLIC_OPENROUTER_API_KEY=your_openrouter_key
+```
 
-Then paste your project credentials into the env variables above.
+### Security warning
 
-Firestore rules: use the ones in [`firestore.rules`](./firestore.rules) at the
-project root — they scope every collection this app actually writes to
-(groups, messages, friend requests/friendships, notifications, AI chats, RAG
-docs) to the users who should have access, and default-deny everything else.
-Deploy them with the Firebase CLI:
+Do **not** commit `.env` to Git.
 
-```bash
+Do not expose production OpenAI or OpenRouter secrets in a publicly
+distributed mobile application.
+
+For production, move AI provider calls to a secure backend/API and keep
+provider secrets server-side.
+
+------------------------------------------------------------------------
+
+# 🔥 Step 4 --- Firebase Configuration
+
+Create or select a Firebase project.
+
+Enable:
+
+``` text
+Firebase Console
+    │
+    ├── Authentication
+    │      └── Email/Password
+    │
+    ├── Firestore Database
+    │
+    └── Storage
+```
+
+Add the Firebase configuration values to `.env`.
+
+------------------------------------------------------------------------
+
+# 🛡 Firestore Security
+
+Production Firestore rules must enforce access based on:
+
+-   Authenticated user
+-   Group membership
+-   Group ownership
+-   Friend relationships
+-   Document ownership/access
+-   User-specific data
+
+Avoid using an unrestricted rule such as:
+
+``` text
+allow read, write: if request.auth != null;
+```
+
+for production.
+
+Deploy the project's production rules when available:
+
+``` bash
 firebase deploy --only firestore:rules
 ```
 
-### Step 3: OpenAI / AI providers (optional)
+------------------------------------------------------------------------
 
-If you want AI features to use a real model, add:
+# 🤖 Step 5 --- AI Configuration
 
-```env
-EXPO_PUBLIC_OPENAI_API_KEY=sk-your-key-here
+## Demo Mode
+
+If a real AI provider key is unavailable, HiveAI can operate in demo
+mode with sample AI responses where supported by the application.
+
+``` text
+No API key
+    ↓
+Demo Mode
+    ↓
+Sample AI response
 ```
 
-Without a key, AI features run in **demo mode** with sample responses.
+## Real AI Mode
 
-### Step 4: Run the app
+``` text
+API key configured
+    ↓
+AI service
+    ↓
+OpenAI / OpenRouter
+    ↓
+Real response
+```
 
-```bash
-npm install
+------------------------------------------------------------------------
+
+# ▶️ Step 6 --- Run the App
+
+Start Expo:
+
+``` bash
 npx expo start
 ```
 
-Scan the QR code with **Expo Go** or press `w` for web.
+Then use:
 
-## How to use
-
-1. **Sign up** with email/password
-2. **Create a group** from the Home tab
-3. **Chat** — type messages; use `@HiveAI` for AI help
-4. **Attach files** — tap 📎 in chat → auto-opens File Analysis
-5. **Add friends** — Friends tab → enter their registered email
-6. **AI tab** — direct conversation with HiveAI
-
-## Folder structure
-
-```
-HiveAI/
-├── App.js
-├── src/
-│   ├── components/     # Button, FormInput, Avatar, MessageBubble
-│   ├── config.js       # Env-based app config
-│   ├── context/        # AuthContext
-│   ├── navigation/     # Root, Auth, Tab navigators
-│   ├── screens/        # All app screens
-│   ├── services/       # firebase, groups, messages, friends, ai, storage
-│   ├── theme/          # Design tokens
-│   └── utils/          # Shared helpers
+``` text
+Android device → Expo Go / Development Build
+iOS device     → Expo Go / Development Build
+Web            → Press W
 ```
 
-## Roadmap
+For a native Android development build:
 
-- [x] **Step 1** — Project scaffold, theme, navigation
-- [x] **Step 2** — Splash / Onboarding screens
-- [x] **Step 3** — Auth screens (Login, Signup, Forgot Password)
-- [x] **Step 4** — Dashboard (Home) + Friends (Firestore)
-- [x] **Step 5** — Group Chat + @HiveAI mentions + AI typing
-- [x] **Step 6** — File Sharing + Analysis
-- [x] **Step 7** — Members + Subscription + AI Usage
-- [x] **Step 8** — Profile / Settings screens
-- [x] **Step 9** — Firebase (Auth, Firestore, Storage)
-- [x] **Step 10** — OpenAI integration (demo mode without key)
-- [x] **Step 11** — RAG: document chunking (LangChain.js splitter) + embeddings (OpenRouter free model) + retrieval-grounded answers, in Group Chat and the AI Assistant tab
+``` bash
+npx expo run:android
+```
 
-## RAG (Document Q&A)
+------------------------------------------------------------------------
 
-- Supported file types: `.txt`, `.md`, `.csv`, `.json`, `.log`. PDF/DOCX text extraction needs native code or a backend, which this project intentionally avoids to keep running in plain **Expo Go**. Export those as `.txt` first.
-- Pipeline (fully client-side, no backend): `expo-document-picker` → Firebase Storage upload → `@langchain/textsplitters` chunking → OpenRouter embeddings (`nvidia/nemotron-3-embed-1b:free`) → chunks + vectors stored in Firestore (`.../ragDocuments/{docId}/chunks`) → cosine-similarity retrieval at query time → answer generated only from retrieved passages.
-- Attach a supported file in a **Group Chat** or the **AI Assistant** tab to open the Document Q&A screen (upload/processing status shown live), or just ask a question afterwards in that same group/chat — HiveAI will automatically use the uploaded document(s) as context.
-- Requires `EXPO_PUBLIC_OPENROUTER_API_KEY` (same key already used for chat replies).
+# 📱 Basic User Flow
 
-## Notes
+``` text
+Launch HiveAI
+      ↓
+Splash
+      ↓
+Login / Sign Up
+      ↓
+Home Dashboard
+      ↓
+Create Group
+      ↓
+Invite / Add Friends
+      ↓
+Open Group Chat
+      ↓
+Send Message
+      ↓
+HiveAI processes the conversation
+      ↓
+AI Response
+```
 
-- Real-time chat uses **Firestore listeners** (no separate Socket.io server needed)
-- For production, move OpenAI calls to a backend to protect API keys
-- Friend requests require the other user to be registered with the same email
+### Document Q&A flow
+
+``` text
+Group Chat / AI Assistant
+          ↓
+       Attach File
+          ↓
+    Document Q&A
+          ↓
+      Upload File
+          ↓
+     Process Chunks
+          ↓
+      Create Embeddings
+          ↓
+     Store in Firestore
+          ↓
+       Ask Question
+          ↓
+    Retrieve Relevant Text
+          ↓
+       AI Answer
+```
+
+------------------------------------------------------------------------
+
+# 🧪 Testing Checklist
+
+Before release, test:
+
+## Authentication
+
+-   [ ] Sign Up
+-   [ ] Login
+-   [ ] Logout
+-   [ ] Forgot Password
+-   [ ] Session persistence
+-   [ ] Invalid credentials
+
+## Groups
+
+-   [ ] Create group
+-   [ ] Open group
+-   [ ] Add members
+-   [ ] Remove members
+-   [ ] Group permissions
+
+## Chat
+
+-   [ ] Send message
+-   [ ] Receive message in real time
+-   [ ] AI response
+-   [ ] `@HiveAI`
+-   [ ] `@AI`
+-   [ ] Attach file
+-   [ ] Conversation summary
+
+## Friends
+
+-   [ ] Send request
+-   [ ] Accept request
+-   [ ] Reject request
+-   [ ] Sent requests
+-   [ ] Registered email validation
+
+## RAG
+
+-   [ ] Upload `.txt`
+-   [ ] Upload `.md`
+-   [ ] Upload `.csv`
+-   [ ] Upload `.json`
+-   [ ] Upload `.log`
+-   [ ] Chunking
+-   [ ] Embeddings
+-   [ ] Retrieval
+-   [ ] Grounded answer
+-   [ ] Delete document
+
+## Subscription
+
+-   [ ] Free plan
+-   [ ] Pro plan
+-   [ ] Team plan
+-   [ ] Demo mode
+-   [ ] Usage meter
+-   [ ] Usage limit
+-   [ ] Expiry handling
+-   [ ] Upgrade flow
+
+## UI
+
+-   [ ] Light theme
+-   [ ] Dark theme
+-   [ ] Small screen
+-   [ ] Large screen
+-   [ ] Keyboard behavior
+-   [ ] Loading states
+-   [ ] Error states
+
+------------------------------------------------------------------------
+
+# 🗺️ Development Roadmap
+
+## Completed
+
+-   [x] Project scaffold
+-   [x] Theme system
+-   [x] Navigation
+-   [x] Splash / onboarding
+-   [x] Login
+-   [x] Sign Up
+-   [x] Forgot Password
+-   [x] Dashboard
+-   [x] Groups
+-   [x] Friends
+-   [x] Real-time group chat
+-   [x] AI group chat integration
+-   [x] `@HiveAI` / `@AI` mentions
+-   [x] AI Assistant
+-   [x] File sharing
+-   [x] File analysis
+-   [x] Group members
+-   [x] Subscription UI / demo activation
+-   [x] AI usage screen
+-   [x] Profile
+-   [x] Settings
+-   [x] Firebase Authentication
+-   [x] Firestore
+-   [x] Firebase Storage
+-   [x] OpenAI integration
+-   [x] Demo AI mode
+-   [x] LangChain.js document splitting
+-   [x] OpenRouter embeddings
+-   [x] RAG retrieval
+-   [x] Document-grounded answers
+
+------------------------------------------------------------------------
+
+# 🔮 Recommended Production Roadmap
+
+### Phase 1 --- Real Subscription
+
+-   [ ] Production subscription provider
+-   [ ] Real Free / Pro / Team entitlements
+-   [ ] Group-wise subscription ownership
+-   [ ] Subscription renewal handling
+-   [ ] Cancellation handling
+-   [ ] Expiry handling
+
+### Phase 2 --- Secure AI Backend
+
+-   [ ] Backend API
+-   [ ] Server-side OpenAI integration
+-   [ ] Server-side OpenRouter integration
+-   [ ] API key protection
+-   [ ] Rate limiting
+-   [ ] Server-side usage enforcement
+
+### Phase 3 --- AI Cost & Analytics
+
+-   [ ] Token tracking
+-   [ ] AI request tracking
+-   [ ] Cost estimation
+-   [ ] Group usage analytics
+-   [ ] Revenue vs AI cost dashboard
+
+### Phase 4 --- Advanced RAG
+
+-   [ ] Better retrieval
+-   [ ] Re-ranking
+-   [ ] Source citations
+-   [ ] Document management
+-   [ ] PDF extraction
+-   [ ] DOCX extraction
+-   [ ] Group document permissions
+
+### Phase 5 --- Advanced Group AI
+
+-   [ ] AI conversation memory
+-   [ ] Message summarization
+-   [ ] AI commands
+-   [ ] Action-item extraction
+-   [ ] AI task generation
+-   [ ] AI streaming responses
+-   [ ] Reply/thread context
+
+### Phase 6 --- Admin Platform
+
+-   [ ] Admin dashboard
+-   [ ] User management
+-   [ ] Group analytics
+-   [ ] Subscription analytics
+-   [ ] AI usage analytics
+-   [ ] AI cost monitoring
+-   [ ] Revenue monitoring
+
+------------------------------------------------------------------------
+
+# 🔒 Production Security Checklist
+
+Before publishing HiveAI:
+
+-   [ ] Remove production secrets from the mobile bundle
+-   [ ] Move OpenAI/OpenRouter calls to a backend
+-   [ ] Validate Firebase authentication server-side
+-   [ ] Validate group membership
+-   [ ] Protect Firestore collections
+-   [ ] Protect Storage paths
+-   [ ] Validate subscription entitlements server-side
+-   [ ] Enforce AI usage limits server-side
+-   [ ] Add rate limiting
+-   [ ] Add abuse protection
+-   [ ] Validate uploaded files
+-   [ ] Restrict document access by group/user
+-   [ ] Never trust subscription or usage values supplied only by the
+    client
+
+------------------------------------------------------------------------
+
+# 💡 Product Vision
+
+HiveAI is designed to go beyond a normal AI chatbot.
+
+The long-term product direction is:
+
+``` text
+                  HIVEAI
+                    │
+        ┌───────────┴───────────┐
+        │                       │
+   Collaboration             AI
+        │                       │
+   ┌────┼────┐          ┌───────┼───────┐
+   │    │    │          │       │       │
+ Groups Friends Chat    Chat    RAG   Automation
+   │         │          │       │       │
+   └─────────┴──────────┴───────┴───────┘
+                    │
+               AI Workspace
+```
+
+The goal is to provide a shared workspace where people can **chat,
+collaborate, share knowledge, and work with AI together**.
+
+------------------------------------------------------------------------
+
+# 📌 Important Notes
+
+-   HiveAI currently uses Firebase Firestore listeners for real-time
+    messaging.
+-   No separate Socket.io server is required for the current chat
+    implementation.
+-   RAG currently supports text-oriented document formats listed above.
+-   PDF/DOCX extraction requires additional native or backend
+    processing.
+-   Demo mode is useful for development and product demonstrations.
+-   Production AI API keys should be kept on a secure backend.
+-   Subscription and AI usage enforcement should be server-side in
+    production.
+-   Friend requests depend on the target user being registered with the
+    relevant email.
+
+------------------------------------------------------------------------
+
+# 📄 License
+
+This project is distributed under the license included in the
+repository's `LICENSE` file.
+
+------------------------------------------------------------------------
+
+## HiveAI
+
+**Collaborate. Chat. Create. With AI.**
+
+Built with React Native, Expo, Firebase, OpenAI, OpenRouter, and
+LangChain.js.

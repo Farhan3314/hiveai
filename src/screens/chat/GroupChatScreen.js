@@ -146,6 +146,9 @@ export default function GroupChatScreen() {
             HiveAI is listening — just chat
           </Text>
         </View>
+        <Pressable onPress={() => navigation.navigate('ActionItems', { groupId, groupName })} hitSlop={10} style={{ marginRight: 16 }}>
+          <Ionicons name="checkbox-outline" size={22} color={colors.aiAccent} />
+        </Pressable>
         <Pressable onPress={() => navigation.navigate('ConversationSummary', { groupId, groupName })} hitSlop={10} style={{ marginRight: 16 }}>
           <Ionicons name="sparkles-outline" size={22} color={colors.aiAccent} />
         </Pressable>

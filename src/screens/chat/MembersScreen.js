@@ -149,13 +149,23 @@ export default function MembersScreen() {
       const snaps = await Promise.all(
         group.memberIds.map(async (uid) => {
           const snap = await getDoc(doc(db, 'users', uid));
-          if (snap.exists()) return snap.data();
+          // Always trust the doc ID for uid, not whatever's (or isn't)
+          // stored inside the document — some older docs never got a
+          // `uid` field written, which left it undefined here and broke
+          // the list's `key` prop below.
+          if (snap.exists()) return { ...snap.data(), uid };
           return { uid, name: 'Member', email: '' };
         })
       );
+      const seen = new Set();
+      const uniqueSnaps = snaps.filter((m) => {
+        if (!m || seen.has(m.uid)) return false;
+        seen.add(m.uid);
+        return true;
+      });
       setMembers([
         { uid: 'hiveai', name: 'HiveAI', email: 'ai@hiveai.app', isAI: true },
-        ...snaps.filter(Boolean),
+        ...uniqueSnaps,
       ]);
       setLoading(false);
     })();
@@ -214,7 +224,7 @@ export default function MembersScreen() {
                   <ActivityIndicator color={colors.primary} />
                 ) : (
                   <Pressable onPress={() => handleRemove(member)} hitSlop={8}>
-                    <Ionicons name="person-remove-outline" size={20} color={colors.danger || '#FF5C7C'} />
+                    <Ionicons name="person-remove-outline" size={20} color={colors.danger} />
                   </Pressable>
                 )
               )}
@@ -226,8 +236,8 @@ export default function MembersScreen() {
               onPress={handleLeave}
               style={[styles.row, styles.leaveRow, { backgroundColor: colors.surface, borderRadius: radius.md, marginTop: 4 }]}
             >
-              <Ionicons name="exit-outline" size={20} color={colors.danger || '#FF5C7C'} />
-              <Text style={[typography.bodyBold, { color: colors.danger || '#FF5C7C', marginLeft: 12 }]}>
+              <Ionicons name="exit-outline" size={20} color={colors.danger} />
+              <Text style={[typography.bodyBold, { color: colors.danger, marginLeft: 12 }]}>
                 Leave Group
               </Text>
             </Pressable>

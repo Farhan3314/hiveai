@@ -14,6 +14,7 @@ import GroupChatScreen from '../screens/chat/GroupChatScreen';
 import MembersScreen from '../screens/chat/MembersScreen';
 import FileAnalysisScreen from '../screens/chat/FileAnalysisScreen';
 import ConversationSummaryScreen from '../screens/chat/ConversationSummaryScreen';
+import ActionItemsScreen from '../screens/chat/ActionItemsScreen';
 import SubscriptionScreen from '../screens/settings/SubscriptionScreen';
 import AIUsageScreen from '../screens/settings/AIUsageScreen';
 import AccountScreen from '../screens/settings/AccountScreen';
@@ -62,6 +63,7 @@ export default function RootNavigator() {
             <Stack.Screen name="Members" component={MembersScreen} />
             <Stack.Screen name="FileAnalysis" component={FileAnalysisScreen} />
             <Stack.Screen name="ConversationSummary" component={ConversationSummaryScreen} />
+            <Stack.Screen name="ActionItems" component={ActionItemsScreen} />
             <Stack.Screen name="Subscription" component={SubscriptionScreen} />
             <Stack.Screen name="AIUsage" component={AIUsageScreen} />
             <Stack.Screen name="EditProfile" component={EditProfileScreen} />

@@ -10,10 +10,19 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { updateGroupLastMessage, getGroup } from './groups';
-import { generateAIReply, generateRAGAnswer, aiLimitReachedMessage } from './ai';
+import {
+  generateAIReply,
+  generateRAGAnswer,
+  generateConversationSummary,
+  extractActionItems,
+  detectAICommand,
+  aiCommandHelpMessage,
+  aiLimitReachedMessage,
+} from './ai';
 import { retrieveContext, hasReadyDocuments } from './rag';
 import { incrementAIUsage, checkAIUsageLimit } from './users';
 import { createNotification } from './notifications';
+import { logAIUsage } from './usageTracking';
 
 export function subscribeMessages(groupId, callback) {
   const q = query(
@@ -46,6 +55,24 @@ export async function getMessagesForSummary(groupId, max = 100) {
     .filter((m) => m.type !== 'ai_typing');
 }
 
+// Most recent N real messages, oldest-first — used to give the AI
+// short-term conversation memory when it replies to an @HiveAI mention
+// (README Phase 5: "AI conversation memory"). Unlike getMessagesForSummary
+// (which takes the earliest `max` messages), this deliberately grabs the
+// tail end of the conversation.
+async function getRecentMessages(groupId, max = 10) {
+  const q = query(
+    collection(db, 'groups', groupId, 'messages'),
+    orderBy('createdAt', 'desc'),
+    limit(max)
+  );
+  const snap = await getDocs(q);
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .filter((m) => m.type !== 'ai_typing')
+    .reverse();
+}
+
 export async function sendMessage(groupId, { text, senderId, senderName, type = 'text', fileUrl, fileName }) {
   const preview = type === 'file' ? `📎 ${fileName || 'File'}` : text;
   const msg = {
@@ -62,13 +89,17 @@ export async function sendMessage(groupId, { text, senderId, senderName, type = 
   await addDoc(collection(db, 'groups', groupId, 'messages'), msg);
   await updateGroupLastMessage(groupId, `${senderName}: ${preview.slice(0, 80)}`);
 
-
+  // HiveAI replies to EVERY text message sent in the group — no @HiveAI /
+  // @AI mention is required. The cleanup of that mention inside
+  // generateAIReply/detectAICommand only matters for messages that DO
+  // include it (so it doesn't leak into the prompt); it was never a
+  // condition that gated whether AI responds at all.
   if (type === 'text' && text?.trim()) {
-    await handleAIMention(groupId, text, senderId, senderName);
+    await triggerAIResponse(groupId, text, senderId, senderName);
   }
 }
 
-async function handleAIMention(groupId, userText, senderId, senderName) {
+async function triggerAIResponse(groupId, userText, senderId, senderName) {
   // Check the sender's plan limit BEFORE spending a real (paid) AI call —
   // the AI Usage screen already showed "limit reached", but nothing
   // previously stopped the actual API request from firing once someone
@@ -85,26 +116,62 @@ async function handleAIMention(groupId, userText, senderId, senderName) {
 
   try {
     let reply;
+    let sources = [];
     let consumedRequest = false;
+    let usageCategory = 'group_mention';
 
     if (!allowed) {
       reply = aiLimitReachedMessage(plan, limit);
     } else {
-      const scopePath = `groups/${groupId}`;
-      const usesDocs = await hasReadyDocuments(scopePath).catch(() => false);
-      if (usesDocs) {
-        const chunks = await retrieveContext({ scopePath, question: userText, topK: 4 });
-        reply = chunks.length
-          ? await generateRAGAnswer(userText, chunks)
-          : await generateAIReply(userText, senderName);
+      // AI commands (README Phase 5: "@HiveAI summarize", "@HiveAI tasks",
+      // "@HiveAI help") take priority over the normal chat/RAG reply path.
+      const cmd = detectAICommand(userText);
+
+      if (cmd?.command === 'help') {
+        reply = aiCommandHelpMessage();
+        consumedRequest = false; // pure help text — no AI call spent
+      } else if (cmd?.command === 'summarize') {
+        const history = await getMessagesForSummary(groupId).catch(() => []);
+        reply = await generateConversationSummary(history);
+        usageCategory = 'summary';
+        consumedRequest = true;
+      } else if (cmd?.command === 'tasks') {
+        const history = await getMessagesForSummary(groupId).catch(() => []);
+        reply = await extractActionItems(history);
+        usageCategory = 'action_items';
+        consumedRequest = true;
       } else {
-        reply = await generateAIReply(userText, senderName);
+        const scopePath = `groups/${groupId}`;
+        const usesDocs = await hasReadyDocuments(scopePath).catch(() => false);
+        const history = await getRecentMessages(groupId, 10).catch(() => []);
+
+        if (usesDocs) {
+          const chunks = await retrieveContext({ scopePath, question: userText, topK: 4 });
+          if (chunks.length) {
+            const result = await generateRAGAnswer(userText, chunks);
+            reply = result.text;
+            sources = result.sources;
+          } else {
+            reply = await generateAIReply(userText, senderName, history);
+          }
+        } else {
+          reply = await generateAIReply(userText, senderName, history);
+        }
+        consumedRequest = true;
       }
-      consumedRequest = true;
     }
 
     if (consumedRequest) {
       await incrementAIUsage(senderId, 1);
+      await logAIUsage({
+        userId: senderId,
+        groupId,
+        category: usageCategory,
+        model: 'group-chat',
+        inputText: userText,
+        outputText: reply,
+        subscriptionPlan: plan,
+      });
     }
 
     // Tag which message/sender this reply is answering. In a busy group,
@@ -112,7 +179,7 @@ async function handleAIMention(groupId, userText, senderId, senderName) {
     // gets its own independent AI reply (no shared/overwritten state), but
     // without this tag it's easy to lose track of which reply answers which
     // message once they're interleaved in the list.
-    await addDoc(collection(db, 'groups', groupId, 'messages'), {
+    const aiMsg = {
       text: reply,
       senderId: 'hiveai',
       senderName: 'HiveAI',
@@ -120,7 +187,10 @@ async function handleAIMention(groupId, userText, senderId, senderName) {
       replyToSenderName: senderName,
       replyToText: userText.slice(0, 120),
       createdAt: serverTimestamp(),
-    });
+    };
+    if (sources.length) aiMsg.sources = sources;
+
+    await addDoc(collection(db, 'groups', groupId, 'messages'), aiMsg);
     await updateGroupLastMessage(groupId, 'HiveAI: ' + reply.slice(0, 80));
 
     // Notify every other group member that HiveAI replied, not just the
