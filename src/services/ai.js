@@ -282,9 +282,19 @@ export async function generateRAGAnswer(question, contextChunks) {
 }
 
 
+// Returns { text, model } instead of a bare string so callers (AIAssistantScreen,
+// messages.js) can log usage/analytics against whichever provider actually
+// answered — previously every image-analysis call was logged as 'gpt-4o-mini'
+// even on the (very common, since OPENAI_API_KEY has $0 credits in this
+// project's .env) path where the OpenAI call failed and the OpenRouter vision
+// fallback answered instead, which quietly corrupted the AI Usage screen's
+// per-model breakdown.
 export async function analyzeImageContent(fileName, base64DataUrl, userPrompt) {
   if (!OPENAI_API_KEY && !OPENROUTER_API_KEY) {
-    return `[Demo mode] ${AI_BOT_NAME}: Photo "${fileName}" received. Add EXPO_PUBLIC_OPENAI_API_KEY or EXPO_PUBLIC_OPENROUTER_API_KEY for real analysis.`;
+    return {
+      text: `[Demo mode] ${AI_BOT_NAME}: Photo "${fileName}" received. Add EXPO_PUBLIC_OPENAI_API_KEY or EXPO_PUBLIC_OPENROUTER_API_KEY for real analysis.`,
+      model: 'demo',
+    };
   }
 
   const promptText = userPrompt?.trim()
@@ -325,26 +335,35 @@ export async function analyzeImageContent(fileName, base64DataUrl, userPrompt) {
       }
       const data = await res.json();
       const reply = data.choices?.[0]?.message?.content?.trim();
-      if (reply) return reply;
+      if (reply) return { text: reply, model: 'gpt-4o-mini' };
     } catch (e) {
       if (!OPENROUTER_API_KEY) {
         console.error('analyzeImageContent (OpenAI) error:', e);
-        return `Sorry, I couldn't analyze that image just now. Please try again in a moment 🙏`;
+        return {
+          text: `Sorry, I couldn't analyze that image just now. Please try again in a moment 🙏`,
+          model: 'gpt-4o-mini',
+        };
       }
       console.warn('analyzeImageContent: OpenAI call failed, falling back to OpenRouter vision model:', e.message);
     }
   }
 
   if (!OPENROUTER_API_KEY) {
-    return `Sorry, I couldn't analyze that image just now. Please try again in a moment 🙏`;
+    return {
+      text: `Sorry, I couldn't analyze that image just now. Please try again in a moment 🙏`,
+      model: 'gpt-4o-mini',
+    };
   }
 
   try {
     const reply = await callOpenRouter(visionMessages, 400, OPENROUTER_VISION_MODEL);
-    return reply?.trim() || 'Could not analyze the image.';
+    return { text: reply?.trim() || 'Could not analyze the image.', model: OPENROUTER_VISION_MODEL };
   } catch (e) {
     console.error('analyzeImageContent (OpenRouter) error:', e);
-    return `Sorry, I couldn't analyze that image just now. Please try again in a moment 🙏`;
+    return {
+      text: `Sorry, I couldn't analyze that image just now. Please try again in a moment 🙏`,
+      model: OPENROUTER_VISION_MODEL,
+    };
   }
 }
 
