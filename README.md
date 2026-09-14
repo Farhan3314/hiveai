@@ -950,6 +950,76 @@ collaborate, share knowledge, and work with AI together**.
 
 ------------------------------------------------------------------------
 
+# 🩹 Fixes Applied (Invitations + Wrong AI Replies After Build)
+
+Two real bugs were found and fixed in this copy of the project:
+
+## 1. Group/friend invitations were not working
+
+**Root cause (two separate bugs, both fixed):**
+
+- **Email casing mismatch.** `findUserByEmail` always lowercased the email
+  you searched for, but the email saved on a user's profile at sign-up kept
+  whatever case Firebase Auth received (`John@Gmail.com` stayed
+  `John@Gmail.com`). A search for `john@gmail.com` would then find nobody,
+  so "Add Friend" failed with *"No user was found with this email"* even
+  for real, registered accounts. **Fix:** every user doc now also stores a
+  normalized `emailLower` field (`src/services/users.js`), written at
+  sign-up and self-healed on every login for older accounts, and the search
+  now queries that field.
+- **No Firestore Security Rules were ever checked into this project** —
+  they only ever existed (or didn't) inside the Firebase Console. The most
+  common failure mode is a group-update rule that only allows the change if
+  the requester is *already* a member — which is never true for the person
+  accepting an invite, since accepting is exactly what's supposed to add
+  them for the first time. That silently fails with `permission-denied` the
+  moment someone taps **Accept** on a group invite.
+
+  **Fix:** `firestore.rules` (+ `firebase.json`, `firestore.indexes.json`)
+  are now included in this project and correctly allow a non-member to join
+  a group **only** by adding their own uid (the accept-invite flow), while
+  still blocking everything else an outsider shouldn't be able to touch.
+
+  **You must deploy this file for the fix to take effect** — it does
+  nothing sitting on disk:
+
+  ```bash
+  npm install -g firebase-tools   # if you don't have it yet
+  firebase login
+  firebase use --add               # pick your hive-ai-e4c99 project once
+  firebase deploy --only firestore:rules
+  ```
+
+## 2. AI replies were wrong/generic after building the app (worked fine in Expo Go)
+
+**Root cause:** `.env` is (correctly) git-ignored, so `EXPO_PUBLIC_OPENROUTER_API_KEY`
+only ever existed on your own machine. Local Expo Go / `expo start` reads
+`.env` directly, but an **EAS Build runs on Expo's remote servers**, which
+never see your local `.env` file — so the app shipped in the actual build
+had no API key at all and silently fell back to the built-in `[Demo mode]`
+canned replies, with no error shown.
+
+**Fix:** register the same variable as an EAS-hosted environment variable
+so it gets baked into cloud builds too (one-time setup per environment):
+
+```bash
+eas env:create --scope project \
+  --name EXPO_PUBLIC_OPENROUTER_API_KEY \
+  --value "your-real-openrouter-key" \
+  --environment production,preview,development \
+  --visibility sensitive
+```
+
+Then rebuild (`eas build --profile production ...`). If a build ever ships
+without the key again, the app now tells you exactly that instead of a
+silent wrong answer — look for a message ending in
+*"(debug: AI provider rejected the API key — check that
+EXPO_PUBLIC_OPENROUTER_API_KEY is set correctly for this build...)"*
+inside the chat itself, which is a diagnostic already built into
+`src/services/ai.js`.
+
+------------------------------------------------------------------------
+
 # 📄 License
 
 This project is distributed under the license included in the

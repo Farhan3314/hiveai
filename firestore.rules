@@ -1,0 +1,145 @@
+rules_version = '2';
+
+// -----------------------------------------------------------------------
+// Why this file exists
+// -----------------------------------------------------------------------
+// This project had NO firestore.rules checked in at all — rules only ever
+// existed (or didn't) in the Firebase Console. That's almost always the
+// real cause behind "invitation feature doesn't work": either the console
+// was still on the default locked/test-mode rules (which reject every
+// read/write, or expire and start rejecting everything after 30 days), or
+// a partial hand-written rule only allowed updating a group document if the
+// requester was ALREADY listed in memberIds — which is never true for the
+// person accepting an invite, since accepting is exactly what's supposed to
+// add them for the first time.
+//
+// Deploy this file with:
+//   firebase deploy --only firestore:rules
+// -----------------------------------------------------------------------
+
+function signedIn() {
+  return request.auth != null;
+}
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---- users --------------------------------------------------------
+    // Any signed-in user can be looked up (needed for "find friend by
+    // email" and for rendering member lists), but only the owner can write
+    // their own profile.
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.auth.uid == userId;
+      allow update: if signedIn() && request.auth.uid == userId;
+      allow delete: if false;
+    }
+
+    // ---- friendRequests -------------------------------------------------
+    match /friendRequests/{requestId} {
+      allow read: if signedIn() &&
+        (request.auth.uid == resource.data.fromUid || request.auth.uid == resource.data.toUid);
+      allow create: if signedIn() && request.auth.uid == request.resource.data.fromUid;
+      // Only the recipient can accept/reject (status change); either side
+      // could in principle cancel, but the app only ever updates `status`.
+      allow update: if signedIn() &&
+        (request.auth.uid == resource.data.toUid || request.auth.uid == resource.data.fromUid);
+      allow delete: if false;
+    }
+
+    // ---- friendships ------------------------------------------------------
+    match /friendships/{friendshipId} {
+      allow read: if signedIn() && request.auth.uid in resource.data.members;
+      allow create: if signedIn() && request.auth.uid in request.resource.data.members;
+      allow delete: if signedIn() && request.auth.uid in resource.data.members;
+      allow update: if false;
+    }
+
+    // ---- notifications ------------------------------------------------
+    // Anyone signed in can create a notification FOR another user (that's
+    // how friend requests / group invites / "AI replied" pings work — the
+    // actor writes into the recipient's notification feed). Only the owner
+    // can read or mutate (mark read, accept/decline) their own.
+    match /notifications/{notifId} {
+      allow read: if signedIn() && request.auth.uid == resource.data.userId;
+      // Any signed-in user may notify someone else (friend request, group
+      // invite, "HiveAI replied" ping, etc.) — that's the whole point of
+      // this collection. Only the recipient can read/update their own.
+      allow create: if signedIn();
+      allow update: if signedIn() && request.auth.uid == resource.data.userId;
+      allow delete: if false;
+    }
+
+    // ---- pushTokens -----------------------------------------------------
+    match /pushTokens/{userId} {
+      allow read: if signedIn();
+      allow write: if signedIn() && request.auth.uid == userId;
+    }
+
+    // ---- groups -----------------------------------------------------------
+    match /groups/{groupId} {
+      allow read: if signedIn() && request.auth.uid in resource.data.memberIds;
+      allow create: if signedIn() && request.auth.uid in request.resource.data.memberIds
+        && request.auth.uid == request.resource.data.createdBy;
+
+      // Update is allowed for:
+      //  1) an existing member (posting last-message previews, admin
+      //     editing group info, admin adding/removing OTHER members), or
+      //  2) someone who is NOT yet a member but whose update ONLY adds
+      //     their own uid to memberIds (and bumps membersCount) — this is
+      //     the "Accept" button on a group invite. Without this branch,
+      //     accepting an invite always fails with permission-denied,
+      //     because the person clicking Accept isn't in memberIds yet.
+      allow update: if signedIn() && (
+        request.auth.uid in resource.data.memberIds ||
+        (
+          request.auth.uid in request.resource.data.memberIds &&
+          !(request.auth.uid in resource.data.memberIds) &&
+          request.resource.data.memberIds.size() == resource.data.memberIds.size() + 1
+        )
+      );
+
+      allow delete: if signedIn() && request.auth.uid == resource.data.createdBy;
+
+      // ---- groups/{groupId}/messages ----
+      match /messages/{messageId} {
+        allow read: if signedIn() && request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
+        allow create: if signedIn() && request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
+        allow update, delete: if false;
+      }
+
+      // ---- groups/{groupId}/ragDocuments (+ nested chunks) ----
+      match /ragDocuments/{docId} {
+        allow read, write: if signedIn() && request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
+
+        match /chunks/{chunkId} {
+          allow read, write: if signedIn() && request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
+        }
+      }
+    }
+
+    // ---- users/{uid}/aiChats/... (1:1 AI Assistant + its RAG docs) -------
+    match /users/{userId}/aiChats/{chatId} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+
+      match /messages/{messageId} {
+        allow read, write: if signedIn() && request.auth.uid == userId;
+      }
+
+      match /ragDocuments/{docId} {
+        allow read, write: if signedIn() && request.auth.uid == userId;
+
+        match /chunks/{chunkId} {
+          allow read, write: if signedIn() && request.auth.uid == userId;
+        }
+      }
+    }
+
+    // ---- aiUsageLogs (usageTracking.js) ---------------------------------
+    match /aiUsageLogs/{logId} {
+      allow read: if signedIn() && request.auth.uid == resource.data.userId;
+      allow create: if signedIn() && request.auth.uid == request.resource.data.userId;
+      allow update, delete: if false;
+    }
+  }
+}

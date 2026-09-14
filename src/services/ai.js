@@ -164,8 +164,35 @@ export async function generateAIReply(userMessage, senderName, conversationHisto
     // business being shown to end users in a group chat. Log the real error
     // for debugging and send back a friendly, generic fallback instead.
     console.error('generateAIReply error:', e);
-    return `Sorry, I ran into a problem answering that just now. Please try again in a moment 🙏`;
+    return `Sorry, I ran into a problem answering that just now. Please try again in a moment 🙏${aiFailureHint(e)}`;
   }
+}
+
+// Turns the caught error into a short, SAFE-to-show category hint appended
+// to the generic failure message above — no keys, no raw provider text,
+// just enough for whoever's testing the build to know where to look. This
+// exists because a build (unlike Expo Go, where you can watch the Metro
+// terminal) usually has no visible console, so without this the exact same
+// generic "I ran into a problem" message shows up whether the real cause is
+// a missing/invalid API key, no internet, or the provider being down —
+// three completely different fixes that were previously indistinguishable
+// from inside the app itself.
+function aiFailureHint(e) {
+  const msg = String(e?.message || '').toLowerCase();
+
+  if (/401|unauthorized|invalid.*(api.?key|credentials)|no auth credentials/.test(msg)) {
+    return '\n\n_(debug: AI provider rejected the API key — check that EXPO_PUBLIC_OPENROUTER_API_KEY is set correctly for this build, e.g. via EAS environment variables, then rebuild.)_';
+  }
+  if (/network request failed|failed to fetch|timed out|timeout/.test(msg)) {
+    return '\n\n_(debug: could not reach the AI provider — check the device has a working internet connection.)_';
+  }
+  if (/429|rate.?limit/.test(msg)) {
+    return '\n\n_(debug: AI provider rate-limited this request — the free model is temporarily overloaded, try again shortly.)_';
+  }
+  if (/5\d\d/.test(msg)) {
+    return '\n\n_(debug: AI provider returned a server error — likely temporary on their end.)_';
+  }
+  return '';
 }
 
 
