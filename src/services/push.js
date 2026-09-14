@@ -1,20 +1,41 @@
 import { Platform } from 'react-native';
 import * as Device from 'expo-device';
-import * as Notifications from 'expo-notifications';
+import { isRunningInExpoGo } from 'expo';
 import Constants from 'expo-constants';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from './firebase';
 
+// IMPORTANT: expo-notifications must NOT be statically `import`-ed here.
+// Merely importing it is enough to crash the app on Android inside Expo
+// Go (SDK 53+) — the package's own module has a top-level side effect
+// (DevicePushTokenAutoRegistration) that calls addPushTokenListener()
+// as soon as the module loads, and that function *throws* on Android in
+// Expo Go instead of just warning. That's the exact "[runtime not ready]
+// ... expo-notifications: Android Push notifications ... was removed
+// from Expo Go" red screen — it happened at import time, before any of
+// our own Expo-Go guards below ever got a chance to run.
+//
+// Fix: detect Expo Go up front and only `require()` the module lazily —
+// and only when we're not in the one environment where importing it is
+// fatal. Everywhere else in this file uses the `Notifications` binding
+// below, which is simply `null` in that case, and every function already
+// checks for that before touching it.
+const skipExpoNotifications = isRunningInExpoGo() && Platform.OS === 'android';
+// eslint-disable-next-line global-require
+const Notifications = skipExpoNotifications ? null : require('expo-notifications');
+
 // Show notifications with a banner + sound even while the app is in the
 // foreground (the default handler suppresses them, which made it look like
 // pushes "didn't arrive" whenever the app happened to be open).
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-  }),
-});
+if (Notifications) {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+    }),
+  });
+}
 
 // Registers this device for push notifications and returns the Expo push
 // token, or null if registration isn't possible (simulator, permission
@@ -23,6 +44,13 @@ Notifications.setNotificationHandler({
 // is logged and resolved as null so callers can safely fire-and-forget.
 export async function registerForPushNotificationsAsync() {
   console.log('[push] registerForPushNotificationsAsync: starting');
+
+  if (!Notifications) {
+    console.log(
+      '[push] Running inside Expo Go on Android — the expo-notifications module was not loaded (importing it crashes on Android in Expo Go since SDK 53). This is expected and does not affect any other feature. Build a Development Build to actually receive pushes (npx expo install expo-dev-client && eas build --profile development).'
+    );
+    return null;
+  }
 
   if (Constants.appOwnership === 'expo') {
     console.log(
