@@ -155,8 +155,15 @@ async function triggerAIResponse(groupId, userText, senderId, senderName) {
         consumedRequest = true;
       } else {
         const scopePath = `groups/${groupId}`;
-        const usesDocs = await hasReadyDocuments(scopePath).catch(() => false);
-        const history = await getRecentMessages(groupId, 10).catch(() => []);
+        // These two lookups don't depend on each other — running them in
+        // parallel instead of one-after-another shaves a full network
+        // round trip off every single AI reply (this was pure sequential
+        // waiting for no reason, and it's the single biggest easy win for
+        // "AI ka response fast ana chahiye").
+        const [usesDocs, history] = await Promise.all([
+          hasReadyDocuments(scopePath).catch(() => false),
+          getRecentMessages(groupId, 10).catch(() => []),
+        ]);
 
         if (usesDocs) {
           const chunks = await retrieveContext({ scopePath, question: userText, topK: 4 });
@@ -174,8 +181,26 @@ async function triggerAIResponse(groupId, userText, senderId, senderName) {
       }
     }
 
+    // generateAIReply/generateRAGAnswer/generateConversationSummary/
+    // extractActionItems already catch their own provider errors and return
+    // a friendly string — `reply` should never be empty here. This is just
+    // a last-resort guard so a future change to any of those can never
+    // result in an empty/undefined message being posted.
+    if (!reply || !reply.trim()) {
+      reply = `Sorry, I couldn't put together a reply just now. Please try again in a moment 🙏`;
+    }
+
     if (consumedRequest) {
-      await incrementAIUsage(senderId, 1);
+      // Best-effort accounting — must never block the actual reply from
+      // being posted. A permission/rules problem writing to `users` or
+      // `aiUsageLogs` used to bubble up from here with no catch, which
+      // skipped posting the AI message entirely: the sender would see
+      // "HiveAI is typing…" disappear and then nothing, forever — exactly
+      // the "AI ka response nahi aata" symptom, even though a perfectly
+      // good reply had already been generated a moment earlier.
+      await incrementAIUsage(senderId, 1).catch((e) =>
+        console.error('[messages] incrementAIUsage FAILED (non-fatal):', e.code, e.message)
+      );
       await logAIUsage({
         userId: senderId,
         groupId,
@@ -184,7 +209,7 @@ async function triggerAIResponse(groupId, userText, senderId, senderName) {
         inputText: userText,
         outputText: reply,
         subscriptionPlan: plan,
-      });
+      }).catch(() => {});
     }
 
     // Tag which message/sender this reply is answering. In a busy group,
@@ -204,7 +229,7 @@ async function triggerAIResponse(groupId, userText, senderId, senderName) {
     if (sources.length) aiMsg.sources = sources;
 
     await addDoc(collection(db, 'groups', groupId, 'messages'), aiMsg);
-    await updateGroupLastMessage(groupId, 'HiveAI: ' + reply.slice(0, 80));
+    await updateGroupLastMessage(groupId, 'HiveAI: ' + reply.slice(0, 80)).catch(() => {});
 
     // Notify every other group member that HiveAI replied, not just the
     // person who sent the message that triggered it — otherwise the rest
@@ -223,6 +248,26 @@ async function triggerAIResponse(groupId, userText, senderId, senderName) {
         }).catch(() => {})
       )
     );
+  } catch (e) {
+    // Absolute last resort: something failed that none of the inner
+    // .catch()s above were guarding (e.g. the FIRST addDoc of aiMsg itself
+    // got permission-denied because Firestore rules aren't deployed). Post
+    // a real, visible chat message instead of leaving the sender staring at
+    // a chat where "HiveAI is typing…" simply vanished with no explanation.
+    console.error('[messages] triggerAIResponse FAILED', { groupId, code: e.code, message: e.message });
+    const debugHint =
+      e.code === 'permission-denied'
+        ? '\n\n_(debug: Firestore rejected this write — deploy firestore.rules with `firebase deploy --only firestore:rules`.)_'
+        : '';
+    await addDoc(collection(db, 'groups', groupId, 'messages'), {
+      text: `Sorry, I ran into a problem answering that just now. Please try again in a moment 🙏${debugHint}`,
+      senderId: 'hiveai',
+      senderName: 'HiveAI',
+      type: 'ai',
+      replyToSenderName: senderName,
+      replyToText: userText.slice(0, 120),
+      createdAt: serverTimestamp(),
+    }).catch(() => {});
   } finally {
     const { deleteDoc, doc: firestoreDoc } = await import('firebase/firestore');
     await deleteDoc(firestoreDoc(db, 'groups', groupId, 'messages', typingRef.id)).catch(() => {});
@@ -290,7 +335,23 @@ async function triggerImageAIResponse(groupId, fileUrl, fileName, caption, sende
       )
     );
   } catch (e) {
-    console.error('triggerImageAIResponse error:', e);
+    // Same fix as triggerAIResponse: never let a failure disappear with
+    // only a console.error — post something visible so the sender isn't
+    // left staring at a chat where the typing indicator just vanished.
+    console.error('[messages] triggerImageAIResponse FAILED', { groupId, code: e.code, message: e.message });
+    const debugHint =
+      e.code === 'permission-denied'
+        ? '\n\n_(debug: Firestore rejected this write — deploy firestore.rules with `firebase deploy --only firestore:rules`.)_'
+        : '';
+    await addDoc(collection(db, 'groups', groupId, 'messages'), {
+      text: `Sorry, I couldn't analyze that image just now. Please try again in a moment 🙏${debugHint}`,
+      senderId: 'hiveai',
+      senderName: 'HiveAI',
+      type: 'ai',
+      replyToSenderName: senderName,
+      replyToText: caption ? caption.slice(0, 120) : `📷 ${fileName || 'Photo'}`,
+      createdAt: serverTimestamp(),
+    }).catch(() => {});
   } finally {
     const { deleteDoc, doc: firestoreDoc } = await import('firebase/firestore');
     await deleteDoc(firestoreDoc(db, 'groups', groupId, 'messages', typingRef.id)).catch(() => {});

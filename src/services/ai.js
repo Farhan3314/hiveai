@@ -12,8 +12,32 @@ const OPENROUTER_MODEL = 'nvidia/nemotron-3.5-lightning:free';
 // for photo analysis whenever OPENAI_API_KEY isn't configured/working.
 const OPENROUTER_VISION_MODEL = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free';
 
+// Free-tier models (OpenRouter's `:free` models especially) can sit queued
+// for a long time under load with no error — just silence. Without a
+// timeout, a slow/stuck request left the group chat's "HiveAI is typing…"
+// indicator spinning indefinitely, which looked identical to "AI ka
+// response nahi aata". Aborting after a bounded time turns that into a
+// fast, clear error instead (caught by aiFailureHint below) so the user at
+// least gets a reply telling them to try again, instead of waiting forever.
+const AI_REQUEST_TIMEOUT_MS = 20000;
+
+async function fetchWithTimeout(url, options, timeoutMs = AI_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeoutMs / 1000}s`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function callOpenAI(messages, maxTokens) {
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+  const res = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -30,7 +54,7 @@ async function callOpenAI(messages, maxTokens) {
 }
 
 async function callOpenRouter(messages, maxTokens, model = OPENROUTER_MODEL) {
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+  const res = await fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -151,7 +175,11 @@ export async function generateAIReply(userMessage, senderName, conversationHisto
   ];
 
   try {
-    let reply = await callAIProvider(chatMessages, 400);
+    // 350 tokens is plenty for a group-chat-style answer and generates
+    // noticeably faster than 400+ on the free models this app defaults to.
+    // Only retry with a larger budget on the rare empty-reply case — most
+    // requests never touch this second call at all.
+    let reply = await callAIProvider(chatMessages, 350);
 
     if (!reply || !reply.trim()) {
       reply = await callAIProvider(chatMessages, 600);
