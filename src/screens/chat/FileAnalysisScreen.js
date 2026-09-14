@@ -123,7 +123,11 @@ export default function FileAnalysisScreen() {
   // automatically once the doc finishes processing if they already typed a
   // prompt before it was uploaded (see initialQuestion below).
   const handleAsk = async (overrideQuestion) => {
-    const trimmed = (overrideQuestion ?? question).trim();
+    // onPress/onSubmitEditing call this with a native event object, not a
+    // string — treat anything that isn't a real string override as "use
+    // the current question state" instead of crashing on event.trim().
+    const source = typeof overrideQuestion === 'string' ? overrideQuestion : question;
+    const trimmed = source.trim();
     if (!trimmed || stage !== STAGE.READY) return;
 
     const entryId = `${Date.now()}`;

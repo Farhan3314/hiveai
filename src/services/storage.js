@@ -174,8 +174,22 @@ export async function uploadAvatar(uid, uri) {
   }
 }
 
-export async function uploadChatFile(groupId, uri, fileName) {
+// kind: 'image' | 'document'. Images are resized/compressed on-device first
+// (see compressChatImage) instead of being read at their original size —
+// without this, a real camera/gallery photo almost always exceeds
+// MAX_FILE_BYTES and fileToDataUri() rejects it before it's ever sent,
+// which is why sharing a photo in Group Chat looked broken (the same bug
+// uploadAIChatFile below was already fixed for). The returned `base64`
+// (image only) lets callers hand the same compressed image straight to a
+// vision AI without re-reading the file.
+export async function uploadChatFile(groupId, uri, fileName, kind = 'document') {
   const safeName = sanitizeFileName(fileName || 'file');
+
+  if (kind === 'image') {
+    const { dataUri, base64 } = await compressChatImage(uri);
+    return { url: dataUri, fileName: safeName, base64 };
+  }
+
   const url = await fileToDataUri(uri, fileName, { maxBytes: MAX_FILE_BYTES });
   return { url, fileName: safeName };
 }

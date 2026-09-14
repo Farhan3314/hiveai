@@ -18,6 +18,7 @@ import {
   detectAICommand,
   aiCommandHelpMessage,
   aiLimitReachedMessage,
+  analyzeImageContent,
 } from './ai';
 import { retrieveContext, hasReadyDocuments } from './rag';
 import { incrementAIUsage, checkAIUsageLimit } from './users';
@@ -74,7 +75,14 @@ async function getRecentMessages(groupId, max = 10) {
 }
 
 export async function sendMessage(groupId, { text, senderId, senderName, type = 'text', fileUrl, fileName }) {
-  const preview = type === 'file' ? `📎 ${fileName || 'File'}` : text;
+  const preview =
+    type === 'file'
+      ? `📎 ${fileName || 'File'}`
+      : type === 'image'
+      ? text?.trim()
+        ? text
+        : '📷 Photo'
+      : text;
   const msg = {
     text: text || '',
     senderId,
@@ -96,6 +104,11 @@ export async function sendMessage(groupId, { text, senderId, senderName, type = 
   // condition that gated whether AI responds at all.
   if (type === 'text' && text?.trim()) {
     await triggerAIResponse(groupId, text, senderId, senderName);
+  } else if (type === 'image' && fileUrl) {
+    // An uploaded photo deserves a real answer too, not silence — analyze
+    // it with the vision model, using whatever caption/prompt the user
+    // typed alongside it (see GroupChatScreen's held-attachment flow).
+    await triggerImageAIResponse(groupId, fileUrl, fileName, text, senderId, senderName);
   }
 }
 
@@ -210,6 +223,74 @@ async function triggerAIResponse(groupId, userText, senderId, senderName) {
         }).catch(() => {})
       )
     );
+  } finally {
+    const { deleteDoc, doc: firestoreDoc } = await import('firebase/firestore');
+    await deleteDoc(firestoreDoc(db, 'groups', groupId, 'messages', typingRef.id)).catch(() => {});
+  }
+}
+
+// Same idea as triggerAIResponse, but for a shared photo instead of text —
+// runs it through the vision model (with whatever caption the sender typed
+// alongside it) so HiveAI actually comments on the image itself instead of
+// staying silent or replying to the wrong thing.
+async function triggerImageAIResponse(groupId, fileUrl, fileName, caption, senderId, senderName) {
+  const { allowed, plan, limit } = await checkAIUsageLimit(senderId).catch(() => ({ allowed: true }));
+
+  const typingRef = await addDoc(collection(db, 'groups', groupId, 'messages'), {
+    text: '',
+    senderId: 'hiveai',
+    senderName: 'HiveAI',
+    type: 'ai_typing',
+    createdAt: serverTimestamp(),
+  });
+
+  try {
+    let reply;
+    if (!allowed) {
+      reply = aiLimitReachedMessage(plan, limit);
+    } else {
+      reply = await analyzeImageContent(fileName, fileUrl, caption);
+      await incrementAIUsage(senderId, 1);
+      await logAIUsage({
+        userId: senderId,
+        groupId,
+        category: 'image_analysis',
+        model: 'gpt-4o-mini',
+        inputText: caption || fileName,
+        outputText: reply,
+        subscriptionPlan: plan,
+      });
+    }
+
+    const aiMsg = {
+      text: reply,
+      senderId: 'hiveai',
+      senderName: 'HiveAI',
+      type: 'ai',
+      replyToSenderName: senderName,
+      replyToText: caption ? caption.slice(0, 120) : `📷 ${fileName || 'Photo'}`,
+      createdAt: serverTimestamp(),
+    };
+
+    await addDoc(collection(db, 'groups', groupId, 'messages'), aiMsg);
+    await updateGroupLastMessage(groupId, 'HiveAI: ' + reply.slice(0, 80));
+
+    const group = await getGroup(groupId).catch(() => null);
+    const recipients = (group?.memberIds || []).filter((uid) => uid !== senderId);
+    await Promise.all(
+      recipients.map((uid) =>
+        createNotification({
+          userId: uid,
+          type: 'ai_reply',
+          title: 'HiveAI replied',
+          body: reply.slice(0, 100),
+          groupId,
+          groupName: group?.name,
+        }).catch(() => {})
+      )
+    );
+  } catch (e) {
+    console.error('triggerImageAIResponse error:', e);
   } finally {
     const { deleteDoc, doc: firestoreDoc } = await import('firebase/firestore');
     await deleteDoc(firestoreDoc(db, 'groups', groupId, 'messages', typingRef.id)).catch(() => {});
