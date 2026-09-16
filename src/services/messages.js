@@ -25,16 +25,25 @@ import { incrementAIUsage, checkAIUsageLimit } from './users';
 import { createNotification } from './notifications';
 import { logAIUsage } from './usageTracking';
 
+// BUGFIX: this used to be `orderBy('createdAt', 'asc') + limit(200)`, which
+// asks Firestore for the FIRST 200 messages ever sent in the group, not the
+// most recent 200. That's harmless while a group is young, but the moment a
+// group passes 200 total messages, the live listener has nothing left to
+// return for anything newer — the chat silently freezes on message #200
+// forever, even though onSnapshot keeps "working" (no error, just an
+// unchanging result set). Ordering by `desc` + `limit(200)` and reversing
+// client-side gives the most recent 200 instead, so the window always slides
+// forward as new messages arrive, exactly like getRecentMessages below.
 export function subscribeMessages(groupId, callback) {
   const q = query(
     collection(db, 'groups', groupId, 'messages'),
-    orderBy('createdAt', 'asc'),
+    orderBy('createdAt', 'desc'),
     limit(200)
   );
   return onSnapshot(
     q,
     (snap) => {
-      callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })).reverse());
     },
     (err) => {
       console.warn('subscribeMessages error:', err.message);
@@ -44,23 +53,30 @@ export function subscribeMessages(groupId, callback) {
 }
 
 
+// BUGFIX: same ascending+limit bug as subscribeMessages above — this used to
+// grab the EARLIEST `max` messages, so "AI Summary" / "Action Items" on any
+// group with more than ~100 messages would keep summarizing the very start
+// of the conversation forever and never see anything recent. Grab the most
+// recent `max` messages (desc + limit, then reverse to oldest-first) so the
+// summary always reflects what's actually been happening lately.
 export async function getMessagesForSummary(groupId, max = 100) {
   const q = query(
     collection(db, 'groups', groupId, 'messages'),
-    orderBy('createdAt', 'asc'),
+    orderBy('createdAt', 'desc'),
     limit(max)
   );
   const snap = await getDocs(q);
   return snap.docs
     .map((d) => ({ id: d.id, ...d.data() }))
-    .filter((m) => m.type !== 'ai_typing');
+    .filter((m) => m.type !== 'ai_typing')
+    .reverse();
 }
 
 // Most recent N real messages, oldest-first — used to give the AI
 // short-term conversation memory when it replies to an @HiveAI mention
-// (README Phase 5: "AI conversation memory"). Unlike getMessagesForSummary
-// (which takes the earliest `max` messages), this deliberately grabs the
-// tail end of the conversation.
+// (README Phase 5: "AI conversation memory"). Same "most recent, then
+// reverse" shape as getMessagesForSummary above, just with a smaller
+// default window sized for a single reply instead of a full summary.
 async function getRecentMessages(groupId, max = 10) {
   const q = query(
     collection(db, 'groups', groupId, 'messages'),
@@ -294,13 +310,16 @@ async function triggerImageAIResponse(groupId, fileUrl, fileName, caption, sende
     if (!allowed) {
       reply = aiLimitReachedMessage(plan, limit);
     } else {
-      reply = await analyzeImageContent(fileName, fileUrl, caption);
+      // analyzeImageContent returns { text, model } — unwrap it here, and log
+      // against the model that actually answered.
+      const result = await analyzeImageContent(fileName, fileUrl, caption);
+      reply = result.text;
       await incrementAIUsage(senderId, 1);
       await logAIUsage({
         userId: senderId,
         groupId,
         category: 'image_analysis',
-        model: 'gpt-4o-mini',
+        model: result.model,
         inputText: caption || fileName,
         outputText: reply,
         subscriptionPlan: plan,

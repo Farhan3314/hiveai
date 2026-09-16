@@ -174,11 +174,49 @@ export async function updateGroupLastMessage(groupId, lastMessage) {
   });
 }
 
-// Permanently deletes a group: its messages subcollection first, then the
-// group document itself. Firestore doesn't cascade-delete subcollections,
-// so we have to clear them out manually from the client.
+// Permanently deletes a group: its ragDocuments (+ nested chunks), then its
+// messages subcollection, then the group document itself. Firestore doesn't
+// cascade-delete subcollections, so we have to clear them out manually from
+// the client — and in this exact order, since ragDocuments/messages rules
+// check the parent group doc's memberIds/createdBy, which must still exist
+// while those deletes are happening.
+//
+// BUGFIX: this used to delete ONLY the messages subcollection, then the
+// group doc. Firestore security rules only ever allowed deleting a message
+// if it was the transient 'ai_typing' placeholder — every real message
+// (text/image/file/AI reply) rejected the delete with permission-denied.
+// Since all the message deletes ran inside one Promise.all, the very FIRST
+// real message in the group caused the whole Promise.all to reject
+// immediately — which meant `deleteDoc(doc(db, 'groups', groupId))` below
+// (deleting the group itself) never even ran. Net effect: "Delete group"
+// from the Home screen silently did nothing for any group that had ever
+// had a real message sent in it — exactly the "group delete nahi ho raha"
+// symptom. firestore.rules now lets the group's creator delete any message
+// as part of tearing the whole group down (see the rules file for details),
+// so these deletes succeed instead of rejecting.
 export async function deleteGroup(groupId) {
-  const messagesSnap = await getDocs(collection(db, 'groups', groupId, 'messages'));
-  await Promise.all(messagesSnap.docs.map((d) => deleteDoc(d.ref)));
-  await deleteDoc(doc(db, 'groups', groupId));
+  console.log('[groups] deleteGroup: attempting', { groupId });
+  try {
+    const ragDocsSnap = await getDocs(collection(db, 'groups', groupId, 'ragDocuments'));
+    await Promise.all(
+      ragDocsSnap.docs.map(async (ragDoc) => {
+        const chunksSnap = await getDocs(collection(db, 'groups', groupId, 'ragDocuments', ragDoc.id, 'chunks'));
+        await Promise.all(chunksSnap.docs.map((c) => deleteDoc(c.ref)));
+        await deleteDoc(ragDoc.ref);
+      })
+    );
+
+    const messagesSnap = await getDocs(collection(db, 'groups', groupId, 'messages'));
+    await Promise.all(messagesSnap.docs.map((d) => deleteDoc(d.ref)));
+
+    await deleteDoc(doc(db, 'groups', groupId));
+    console.log('[groups] deleteGroup: success', { groupId });
+  } catch (e) {
+    // Surface the exact Firebase error code/message so a future rules
+    // regression (e.g. someone re-tightening the messages delete rule)
+    // shows up immediately in the console instead of "delete button does
+    // nothing" with zero explanation.
+    console.error('[groups] deleteGroup FAILED', { groupId, code: e.code, message: e.message });
+    throw e;
+  }
 }

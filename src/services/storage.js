@@ -15,6 +15,7 @@
 // those still enforce MAX_FILE_BYTES and ask the user to pick a smaller file.
 
 import * as ImageManipulator from 'expo-image-manipulator';
+import * as FileSystem from 'expo-file-system';
 
 const MAX_FILE_BYTES = 700 * 1024; // ~700KB raw -> ~950KB base64, safely under 1MiB
 const AVATAR_TARGET_BYTES = 300 * 1024; // final base64 size we aim the avatar under
@@ -42,69 +43,53 @@ const detectContentType = (fileName, fallback = 'application/octet-stream') => {
   return fallback;
 };
 
-const readBlobFromUri = async (uri, fileName) => {
+// BUGFIX: this used to read the picked document via `fetch(uri)` and then
+// `response.blob()`. On React Native, Blob is a polyfill — `.blob()` reads
+// the local file into RN's native "Blob store" by base64-encoding it over
+// the bridge once, and then blobToDataUri()'s `FileReader.readAsDataURL`
+// base64-encodes it AGAIN to turn it back into a data URI. That's the exact
+// "Response.blob() is using React Native's Blob... may be slow for large
+// responses" warning, and it's not just noisy — the double round-trip
+// through the native bridge is genuinely slow and occasionally flaky for
+// anything beyond a tiny file, which is what made document attachment
+// uploads feel broken/hung.
+//
+// expo-file-system reads a local file straight into a base64 string in one
+// native call, with no Blob involved at all — faster, and the warning is
+// gone because Response.blob() is never called.
+const fileToDataUri = async (uri, fileName, { maxBytes } = {}) => {
   if (!uri) {
     throw new Error('No file URI was provided.');
   }
 
+  let info;
   try {
-    const response = await fetch(uri);
-    if (!response.ok) {
-      throw new Error(`File read failed with status ${response.status}`);
-    }
-    return await response.blob();
+    info = await FileSystem.getInfoAsync(uri, { size: true });
   } catch (error) {
-    const xhr = new XMLHttpRequest();
-    return await new Promise((resolve, reject) => {
-      xhr.responseType = 'blob';
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          resolve(xhr.response);
-        } else {
-          reject(new Error(`File read failed with status ${xhr.status}`));
-        }
-      };
-      xhr.onerror = () => {
-        reject(new Error(`Could not read ${fileName || 'file'} from the device.`));
-      };
-      xhr.open('GET', uri);
-      xhr.send();
-    });
+    throw new Error(`Could not read ${fileName || 'this file'} from the device.`);
   }
-};
 
-const blobToDataUri = (blob) =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error('Could not read the file into memory.'));
-    reader.readAsDataURL(blob);
-  });
+  if (!info.exists) {
+    throw new Error(`Could not read ${fileName || 'this file'} from the device.`);
+  }
 
-const fileToDataUri = async (uri, fileName, { maxBytes } = {}) => {
-  const blob = await readBlobFromUri(uri, fileName);
-
-  if (maxBytes && blob.size > maxBytes) {
+  if (maxBytes && info.size > maxBytes) {
     const limitKb = Math.round(maxBytes / 1024);
     throw new Error(
-      `"${fileName || 'This file'}" is too large (${Math.round(blob.size / 1024)}KB). ` +
+      `"${fileName || 'This file'}" is too large (${Math.round(info.size / 1024)}KB). ` +
         `Please choose a file under ${limitKb}KB — attachments are stored locally, not in paid cloud storage.`
     );
   }
 
-  let dataUri = await blobToDataUri(blob);
-
-  // Some RN environments return a generic "application/octet-stream" mime
-  // from FileReader; normalize it using the file extension when possible.
-  const contentType = detectContentType(fileName, blob.type || 'application/octet-stream');
-  if (contentType && !dataUri.startsWith(`data:${contentType}`)) {
-    const commaIndex = dataUri.indexOf(',');
-    if (commaIndex !== -1) {
-      dataUri = `data:${contentType};base64,${dataUri.slice(commaIndex + 1)}`;
-    }
+  let base64;
+  try {
+    base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+  } catch (error) {
+    throw new Error(`Could not read ${fileName || 'this file'} from the device.`);
   }
 
-  return dataUri;
+  const contentType = detectContentType(fileName);
+  return `data:${contentType};base64,${base64}`;
 };
 
 // Resizes + compresses a photo on-device until its base64 form comfortably

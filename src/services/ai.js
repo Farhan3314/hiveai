@@ -1,16 +1,5 @@
-import { OPENAI_API_KEY, AI_BOT_NAME, OPENROUTER_API_KEY } from '../config';
+import { AI_BOT_NAME, OPENROUTER_API_KEY, AI_MODEL, AI_VISION_MODEL } from '../config';
 
-const DEMO_REPLIES = [
-  "I'm here to help! Please describe your question in detail and mention @HiveAI.",
-  "Great question! Based on the group context, I suggest breaking this into smaller tasks.",
-  "Here's a quick summary: focus on API integration first, then UI polish.",
-];
-
-const OPENROUTER_MODEL = 'nvidia/nemotron-3.5-lightning:free';
-// Text-only free model above can't see images. This one can (image + text
-// input, OpenAI-compatible content format), so it's used as the fallback
-// for photo analysis whenever OPENAI_API_KEY isn't configured/working.
-const OPENROUTER_VISION_MODEL = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free';
 
 // Free-tier models (OpenRouter's `:free` models especially) can sit queued
 // for a long time under load with no error — just silence. Without a
@@ -20,6 +9,13 @@ const OPENROUTER_VISION_MODEL = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:f
 // fast, clear error instead (caught by aiFailureHint below) so the user at
 // least gets a reply telling them to try again, instead of waiting forever.
 const AI_REQUEST_TIMEOUT_MS = 20000;
+
+// Every reply in this app comes from OpenRouter — there is no demo/offline
+// mode and no second provider. If the key is missing the app says so plainly
+// instead of returning canned text that looks like a real AI answer.
+function missingKeyMessage() {
+  return `${AI_BOT_NAME} is not configured yet — EXPO_PUBLIC_OPENROUTER_API_KEY is missing. Add your OpenRouter key to .env (or to the EAS environment variables for a build) and restart the app.`;
+}
 
 async function fetchWithTimeout(url, options, timeoutMs = AI_REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -36,24 +32,7 @@ async function fetchWithTimeout(url, options, timeoutMs = AI_REQUEST_TIMEOUT_MS)
   }
 }
 
-async function callOpenAI(messages, maxTokens) {
-  const res = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({ model: 'gpt-4o-mini', messages, max_tokens: maxTokens }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `OpenAI API error ${res.status}`);
-  }
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content?.trim() || null;
-}
-
-async function callOpenRouter(messages, maxTokens, model = OPENROUTER_MODEL) {
+async function callOpenRouter(messages, maxTokens, model = AI_MODEL) {
   const res = await fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -78,27 +57,12 @@ async function callOpenRouter(messages, maxTokens, model = OPENROUTER_MODEL) {
   return data.choices?.[0]?.message?.content?.trim() || null;
 }
 
-// Calls whichever real AI provider is configured. Tries OpenAI first when a
-// key is set, but — unlike before — a failed OpenAI call (expired key, no
-// billing credits, rate limit, etc.) now falls through to OpenRouter instead
-// of failing the whole request outright, as long as an OpenRouter key is
-// also configured. Returns null if no provider is configured at all, so
-// callers can fall back to demo mode.
+// Calls OpenRouter, the only AI provider this project uses.
 async function callAIProvider(messages, maxTokens) {
-  if (OPENAI_API_KEY) {
-    try {
-      return await callOpenAI(messages, maxTokens);
-    } catch (e) {
-      if (!OPENROUTER_API_KEY) throw e;
-      console.warn('OpenAI call failed, falling back to OpenRouter:', e.message);
-    }
+  if (!OPENROUTER_API_KEY) {
+    throw new Error('EXPO_PUBLIC_OPENROUTER_API_KEY is not configured.');
   }
-
-  if (OPENROUTER_API_KEY) {
-    return await callOpenRouter(messages, maxTokens);
-  }
-
-  return null;
+  return await callOpenRouter(messages, maxTokens);
 }
 
 // Shown instead of calling a real (paid) AI provider once a user is over
@@ -147,8 +111,8 @@ export async function generateAIReply(userMessage, senderName, conversationHisto
 
   const promptText = cleaned || userMessage.trim() || 'Hello';
 
-  if (!OPENAI_API_KEY && !OPENROUTER_API_KEY) {
-    return `[Demo mode] ${AI_BOT_NAME}: ${DEMO_REPLIES[Math.floor(Math.random() * DEMO_REPLIES.length)]}\n\n(Aapka message: "${promptText.slice(0, 120)}")`;
+  if (!OPENROUTER_API_KEY) {
+    return missingKeyMessage();
   }
 
   // Naming the sender matters in a group chat: several people can message
@@ -253,9 +217,9 @@ export async function generateRAGAnswer(question, contextChunks) {
     .map((c, i) => `[${i + 1}] (from ${c.fileName})\n${c.text}`)
     .join('\n\n');
 
-  if (!OPENAI_API_KEY && !OPENROUTER_API_KEY) {
+  if (!OPENROUTER_API_KEY) {
     return {
-      text: `[Demo mode] ${AI_BOT_NAME}: Found ${contextChunks.length} relevant passage(s) in your document(s), but need EXPO_PUBLIC_OPENROUTER_API_KEY to actually answer. Top match:\n\n"${contextChunks[0].text.slice(0, 200)}..."`,
+      text: missingKeyMessage(),
       sources,
     };
   }
@@ -282,18 +246,15 @@ export async function generateRAGAnswer(question, contextChunks) {
 }
 
 
-// Returns { text, model } instead of a bare string so callers (AIAssistantScreen,
-// messages.js) can log usage/analytics against whichever provider actually
-// answered — previously every image-analysis call was logged as 'gpt-4o-mini'
-// even on the (very common, since OPENAI_API_KEY has $0 credits in this
-// project's .env) path where the OpenAI call failed and the OpenRouter vision
-// fallback answered instead, which quietly corrupted the AI Usage screen's
-// per-model breakdown.
+// Returns { text, model } instead of a bare string so callers
+// (AIAssistantScreen, messages.js) can log usage/analytics against the model
+// that actually answered, keeping the AI Usage screen's per-model breakdown
+// accurate.
 export async function analyzeImageContent(fileName, base64DataUrl, userPrompt) {
-  if (!OPENAI_API_KEY && !OPENROUTER_API_KEY) {
+  if (!OPENROUTER_API_KEY) {
     return {
-      text: `[Demo mode] ${AI_BOT_NAME}: Photo "${fileName}" received. Add EXPO_PUBLIC_OPENAI_API_KEY or EXPO_PUBLIC_OPENROUTER_API_KEY for real analysis.`,
-      model: 'demo',
+      text: missingKeyMessage(),
+      model: 'none',
     };
   }
 
@@ -315,54 +276,14 @@ export async function analyzeImageContent(fileName, base64DataUrl, userPrompt) {
     },
   ];
 
-  // Try OpenAI's vision model first when configured, exactly like the
-  // text path does — but unlike before, a missing/failed OpenAI key no
-  // longer means "sorry, can't see images". It now falls through to a
-  // free vision-capable model on OpenRouter instead.
-  if (OPENAI_API_KEY) {
-    try {
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({ model: 'gpt-4o-mini', max_tokens: 400, messages: visionMessages }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error?.message || `OpenAI API error ${res.status}`);
-      }
-      const data = await res.json();
-      const reply = data.choices?.[0]?.message?.content?.trim();
-      if (reply) return { text: reply, model: 'gpt-4o-mini' };
-    } catch (e) {
-      if (!OPENROUTER_API_KEY) {
-        console.error('analyzeImageContent (OpenAI) error:', e);
-        return {
-          text: `Sorry, I couldn't analyze that image just now. Please try again in a moment 🙏`,
-          model: 'gpt-4o-mini',
-        };
-      }
-      console.warn('analyzeImageContent: OpenAI call failed, falling back to OpenRouter vision model:', e.message);
-    }
-  }
-
-  if (!OPENROUTER_API_KEY) {
-    return {
-      text: `Sorry, I couldn't analyze that image just now. Please try again in a moment 🙏`,
-      model: 'gpt-4o-mini',
-    };
-  }
-
   try {
-    const reply = await callOpenRouter(visionMessages, 400, OPENROUTER_VISION_MODEL);
-    return { text: reply?.trim() || 'Could not analyze the image.', model: OPENROUTER_VISION_MODEL };
+    const reply = await callOpenRouter(visionMessages, 400, AI_VISION_MODEL);
+    return { text: reply?.trim() || 'Could not analyze the image.', model: AI_VISION_MODEL };
   } catch (e) {
-    console.error('analyzeImageContent (OpenRouter) error:', e);
+    console.error('analyzeImageContent error:', e);
     return {
       text: `Sorry, I couldn't analyze that image just now. Please try again in a moment 🙏`,
-      model: OPENROUTER_VISION_MODEL,
+      model: AI_VISION_MODEL,
     };
   }
 }
@@ -381,8 +302,8 @@ export async function generateConversationSummary(messages) {
     .join('\n')
     .slice(0, 6000); // keep the prompt bounded for very long histories
 
-  if (!OPENAI_API_KEY && !OPENROUTER_API_KEY) {
-    return `[Demo mode] ${AI_BOT_NAME}: Found ${realMessages.length} messages in this conversation. Add EXPO_PUBLIC_OPENAI_API_KEY or EXPO_PUBLIC_OPENROUTER_API_KEY for a real AI-generated summary.\n\nMost recent message: "${realMessages[realMessages.length - 1].text.slice(0, 150)}"`;
+  if (!OPENROUTER_API_KEY) {
+    return missingKeyMessage();
   }
 
   try {
@@ -418,8 +339,8 @@ export async function extractActionItems(messages) {
     .join('\n')
     .slice(0, 6000);
 
-  if (!OPENAI_API_KEY && !OPENROUTER_API_KEY) {
-    return `[Demo mode] ${AI_BOT_NAME}: Scanned ${realMessages.length} messages. Add EXPO_PUBLIC_OPENAI_API_KEY or EXPO_PUBLIC_OPENROUTER_API_KEY for real AI-extracted action items.`;
+  if (!OPENROUTER_API_KEY) {
+    return missingKeyMessage();
   }
 
   try {
@@ -437,28 +358,5 @@ export async function extractActionItems(messages) {
   } catch (e) {
     console.error('extractActionItems error:', e);
     return `Sorry, I couldn't extract action items just now. Please try again in a moment 🙏`;
-  }
-}
-
-export async function analyzeFileContent(fileName, textContent) {
-  if (!OPENAI_API_KEY && !OPENROUTER_API_KEY) {
-    return `[Demo Analysis of "${fileName}"]\n\nFile received (${textContent?.length || 0} chars). Add EXPO_PUBLIC_OPENAI_API_KEY or EXPO_PUBLIC_OPENROUTER_API_KEY for real analysis.\n\nPreview: ${(textContent || '').slice(0, 200)}`;
-  }
-
-  try {
-    const reply = await callAIProvider(
-      [
-        {
-          role: 'system',
-          content: 'Analyze the uploaded file content. Provide: 1) Brief summary 2) Key points 3) Suggested actions.',
-        },
-        { role: 'user', content: `File: ${fileName}\n\n${textContent?.slice(0, 3000) || '(binary file)'}` },
-      ],
-      400
-    );
-    return reply || 'Analysis complete.';
-  } catch (e) {
-    console.error('analyzeFileContent error:', e);
-    return `Sorry, I couldn't analyze that file just now. Please try again in a moment 🙏`;
   }
 }

@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, Pressable } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -98,10 +98,5 @@ const styles = StyleSheet.create({
   },
   bottom: {
     width: '100%',
-  },
-  signInRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    marginTop: 16,
   },
 });

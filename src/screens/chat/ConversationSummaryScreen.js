@@ -9,6 +9,7 @@ import Button from '../../components/Button';
 import { getMessagesForSummary } from '../../services/messages';
 import { generateConversationSummary, aiLimitReachedMessage } from '../../services/ai';
 import { incrementAIUsage, checkAIUsageLimit } from '../../services/users';
+import { logAIUsage } from '../../services/usageTracking';
 import { useAuth } from '../../context/AuthContext';
 
 export default function ConversationSummaryScreen() {
@@ -32,7 +33,32 @@ export default function ConversationSummaryScreen() {
       const messages = await getMessagesForSummary(groupId);
       const result = await generateConversationSummary(messages);
       setSummary(result);
-      await incrementAIUsage(user.uid, 1);
+      // BUGFIX: this used to be an unguarded `await incrementAIUsage(...)`
+      // AFTER the summary was already shown to the user. If that write
+      // failed for any reason (permission hiccup, brief network drop), it
+      // threw into the catch block below and overwrote the perfectly good
+      // summary already on screen with a generic "couldn't generate"
+      // message — the user would see the AI "fail" even though it had
+      // already answered. Usage tracking is best-effort accounting and
+      // must never be able to erase a result the user already has.
+      await incrementAIUsage(user.uid, 1).catch((e) =>
+        console.error('[ConversationSummary] incrementAIUsage FAILED (non-fatal):', e.code, e.message)
+      );
+      // BUGFIX: this screen never logged to aiUsageLogs (unlike its sibling
+      // ActionItemsScreen, which does), so the "Conversation summaries"
+      // category on the AI Usage screen always showed 0 calls/cost even
+      // though people were actively using this feature. logAIUsage already
+      // swallows its own errors internally (see usageTracking.js), so no
+      // extra .catch is needed here.
+      await logAIUsage({
+        userId: user.uid,
+        groupId,
+        category: 'summary',
+        model: 'conversation-summary',
+        inputText: messages.map((m) => m.text).join('\n'),
+        outputText: result,
+        subscriptionPlan: plan,
+      });
     } catch (e) {
       console.error('ConversationSummary generate error:', e);
       setSummary("Sorry, I couldn't generate a summary just now. Please try again in a moment 🙏");

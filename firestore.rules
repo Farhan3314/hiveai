@@ -105,7 +105,32 @@ service cloud.firestore {
       match /messages/{messageId} {
         allow read: if signedIn() && request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
         allow create: if signedIn() && request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
-        allow update, delete: if false;
+        allow update: if false;
+        // Two independent reasons a message can be deleted:
+        //  1) Any member can delete the transient "HiveAI is typing..."
+        //     placeholder (type == 'ai_typing') right after the real reply
+        //     is posted (see services/messages.js finally block). The old
+        //     blanket `allow delete: if false` silently rejected that
+        //     delete every time, so the placeholder never actually went
+        //     away — the loading bubble sat there forever.
+        //  2) The group's CREATOR can delete any message, real or
+        //     otherwise. This is what makes "Delete group" from the Home
+        //     screen actually work: services/groups.js's deleteGroup()
+        //     deletes every message in the subcollection before deleting
+        //     the group document itself. Without this branch, that delete
+        //     hit permission-denied on the very first real (non-typing)
+        //     message, Promise.all rejected immediately, and the group
+        //     document itself was NEVER reached — so "Delete group" quietly
+        //     did nothing for any group that had ever had a real message
+        //     sent in it. Every other member still can never delete a real
+        //     message — only the creator, and only as part of tearing the
+        //     whole group down.
+        allow delete: if signedIn()
+          && request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds
+          && (
+            resource.data.type == 'ai_typing' ||
+            request.auth.uid == get(/databases/$(database)/documents/groups/$(groupId)).data.createdBy
+          );
       }
 
       // ---- groups/{groupId}/ragDocuments (+ nested chunks) ----

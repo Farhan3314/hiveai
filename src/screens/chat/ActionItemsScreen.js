@@ -36,7 +36,13 @@ export default function ActionItemsScreen() {
       const messages = await getMessagesForSummary(groupId);
       const output = await extractActionItems(messages);
       setResult(output);
-      await incrementAIUsage(user.uid, 1);
+      // BUGFIX: same issue as ConversationSummaryScreen — incrementAIUsage
+      // was unguarded AFTER a good result was already shown, so a failed
+      // usage-counter write would fall into the catch block below and wipe
+      // out the already-generated action items with a generic error message.
+      await incrementAIUsage(user.uid, 1).catch((e) =>
+        console.error('[ActionItems] incrementAIUsage FAILED (non-fatal):', e.code, e.message)
+      );
       await logAIUsage({
         userId: user.uid,
         groupId,

@@ -5,14 +5,18 @@
 // environment variables. The only value that stays in .env is the OpenRouter
 // API key below, since that one IS a real secret.
 
-// OPENAI_API_KEY is intentionally NOT wired up via .env in this project setup
-// (only OpenRouter is) — it stays here, defaulting to '', purely so
-// services/ai.js's "OpenAI first, then OpenRouter" fallback logic keeps
-// working unchanged if someone adds EXPO_PUBLIC_OPENAI_API_KEY back later.
-export const OPENAI_API_KEY = process.env.EXPO_PUBLIC_OPENAI_API_KEY || '';
+// OpenRouter is the ONLY AI provider in this project.
 export const OPENROUTER_API_KEY = process.env.EXPO_PUBLIC_OPENROUTER_API_KEY || '';
 
 export const AI_BOT_NAME = 'HiveAI';
+
+// Default free text model used for chat replies, summaries, action items
+// and RAG answers.
+export const AI_MODEL = 'nvidia/nemotron-3.5-lightning:free';
+
+// The text model above can't see images. This one can (image + text input),
+// so it handles photo analysis in the AI Assistant and group chats.
+export const AI_VISION_MODEL = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free';
 
 // Free embedding model served through OpenRouter, used for the RAG pipeline
 // (document chunk embeddings + question embeddings). 32k token context window

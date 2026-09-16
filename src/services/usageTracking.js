@@ -1,23 +1,24 @@
 import { collection, addDoc, serverTimestamp, query, where, getDocs } from 'firebase/firestore';
 import { db } from './firebase';
+import { AI_MODEL, AI_VISION_MODEL, EMBEDDING_MODEL } from '../config';
 
-// Rough token estimate: ~4 characters per token (a common OpenAI-style
-// approximation). No tokenizer dependency needed for usage/cost visibility.
-export function estimateTokens(text = '') {
+// Rough token estimate: ~4 characters per token. No tokenizer dependency
+// needed for usage/cost visibility.
+function estimateTokens(text = '') {
   const len = (text || '').toString().length;
   return Math.max(1, Math.ceil(len / 4));
 }
 
-// $ per 1,000 tokens. Free/demo models cost 0 — real paid models can be
-// added here as they're wired up in services/ai.js.
+// $ per 1,000 tokens. The OpenRouter free models cost 0 — paid OpenRouter
+// models can be added here as they're wired up in services/ai.js.
 const MODEL_PRICING = {
-  'gpt-4o-mini': { input: 0.00015, output: 0.0006 },
-  'nvidia/nemotron-3.5-lightning:free': { input: 0, output: 0 },
-  'nvidia/nemotron-3-embed-1b:free': { input: 0, output: 0 },
-  demo: { input: 0, output: 0 },
+  [AI_MODEL]: { input: 0, output: 0 },
+  [AI_VISION_MODEL]: { input: 0, output: 0 },
+  [EMBEDDING_MODEL]: { input: 0, output: 0 },
+  none: { input: 0, output: 0 },
 };
 
-export function estimateCost(model, inputTokens, outputTokens) {
+function estimateCost(model, inputTokens, outputTokens) {
   const pricing = MODEL_PRICING[model] || { input: 0, output: 0 };
   const cost = (inputTokens / 1000) * pricing.input + (outputTokens / 1000) * pricing.output;
   return Math.round(cost * 1e6) / 1e6;

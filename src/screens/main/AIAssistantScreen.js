@@ -183,15 +183,18 @@ export default function AIAssistantScreen() {
         // uncompressed picker output — keeps this fast and avoids sending
         // a multi-MB payload to the vision API.
         const dataUrl = base64 ? url : null;
-        reply = dataUrl
+        // analyzeImageContent returns { text, model } — unwrap it here, and
+        // log against the model that actually answered.
+        const result = dataUrl
           ? await analyzeImageContent(attachment.name, dataUrl, caption)
-          : 'Sorry, I could not read that image.';
+          : { text: 'Sorry, I could not read that image.', model: 'none' };
+        reply = result.text;
         await incrementAIUsage(user.uid, 1);
         await logAIUsage({
           userId: user.uid,
           chatId,
           category: 'image_analysis',
-          model: 'gpt-4o-mini',
+          model: result.model,
           inputText: caption || attachment.name,
           outputText: reply,
           subscriptionPlan: plan,
