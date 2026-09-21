@@ -25,7 +25,7 @@ export default function ConversationSummaryScreen() {
   const handleGenerate = async () => {
     setLoading(true);
     try {
-      const { allowed, plan, limit } = await checkAIUsageLimit(user.uid).catch(() => ({ allowed: true }));
+      const { allowed, plan, limit } = await checkAIUsageLimit(user.uid);
       if (!allowed) {
         setSummary(aiLimitReachedMessage(plan, limit));
         return;

@@ -136,7 +136,7 @@ export default function FileAnalysisScreen() {
     setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
 
     try {
-      const { allowed, plan, limit } = await checkAIUsageLimit(user.uid).catch(() => ({ allowed: true }));
+      const { allowed, plan, limit } = await checkAIUsageLimit(user.uid);
       let answer;
       let sources = [];
       if (!allowed) {
@@ -156,7 +156,7 @@ export default function FileAnalysisScreen() {
           inputText: trimmed,
           outputText: answer,
           subscriptionPlan: plan,
-        });
+        }).catch((error) => console.error('[file-analysis] logAIUsage failed after response:', error));
       }
       setQa((prev) =>
         prev.map((item) => (item.id === entryId ? { ...item, answer, sources, loading: false } : item))

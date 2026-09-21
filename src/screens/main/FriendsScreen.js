@@ -103,7 +103,7 @@ export default function FriendsScreen() {
   const handleAccept = async (request) => {
     setBusyId(request.id);
     try {
-      await acceptFriendRequest(request);
+      await acceptFriendRequest(request.id);
     } catch (e) {
       Alert.alert('Error', e.message);
     } finally {
@@ -125,14 +125,32 @@ export default function FriendsScreen() {
   const handleSendRequest = async () => {
     if (!email.trim()) return;
     setSending(true);
-    const result = await sendFriendRequest(user, email);
-    setSending(false);
-    if (result.success) {
-      setModalVisible(false);
-      setEmail('');
-      Alert.alert('Sent!', 'Your friend request has been sent.');
-    } else {
-      Alert.alert('Error', result.error);
+    // NOTE: this used to call sendFriendRequest with no try/catch. That
+    // function only returns { success: false, error } for *expected*
+    // failures (no such user, already sent, etc.) — any *unexpected* one
+    // (a dropped connection, a permission hiccup) throws instead. Uncaught,
+    // that left `sending` stuck true forever with no Alert at all: the Send
+    // button just sat there spinning and nothing ever appeared to happen,
+    // which is exactly the "user add nahi ho raha" symptom. try/finally
+    // guarantees the spinner always clears and the person always sees why.
+    try {
+      const result = await sendFriendRequest(user, email);
+      if (result.success) {
+        setModalVisible(false);
+        setEmail('');
+        Alert.alert(
+          result.alreadyFriends ? "You're friends!" : 'Sent!',
+          result.alreadyFriends
+            ? 'They had already sent you a request, so you\'re connected now.'
+            : 'Your friend request has been sent.'
+        );
+      } else {
+        Alert.alert('Error', result.error);
+      }
+    } catch (e) {
+      Alert.alert('Error', e.message || 'Could not send the friend request. Please try again.');
+    } finally {
+      setSending(false);
     }
   };
 

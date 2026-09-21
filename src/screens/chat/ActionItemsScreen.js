@@ -28,7 +28,7 @@ export default function ActionItemsScreen() {
   const handleGenerate = async () => {
     setLoading(true);
     try {
-      const { allowed, plan, limit } = await checkAIUsageLimit(user.uid).catch(() => ({ allowed: true }));
+      const { allowed, plan, limit } = await checkAIUsageLimit(user.uid);
       if (!allowed) {
         setResult(aiLimitReachedMessage(plan, limit));
         return;

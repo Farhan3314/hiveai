@@ -1,60 +1,163 @@
-import { AI_BOT_NAME, OPENROUTER_API_KEY, AI_MODEL, AI_VISION_MODEL } from '../config';
+import { AI_BOT_NAME, OPENROUTER_API_KEY, AI_MODEL, AI_FALLBACK_MODEL, AI_VISION_MODEL } from '../config';
 
 
-// Free-tier models (OpenRouter's `:free` models especially) can sit queued
-// for a long time under load with no error — just silence. Without a
-// timeout, a slow/stuck request left the group chat's "HiveAI is typing…"
-// indicator spinning indefinitely, which looked identical to "AI ka
-// response nahi aata". Aborting after a bounded time turns that into a
-// fast, clear error instead (caught by aiFailureHint below) so the user at
-// least gets a reply telling them to try again, instead of waiting forever.
-const AI_REQUEST_TIMEOUT_MS = 20000;
+export const AI_SERVICE_VERSION = 'v3-2026-09-21';
+console.log(`[ai] service loaded (${AI_SERVICE_VERSION})`);
 
-// Every reply in this app comes from OpenRouter — there is no demo/offline
-// mode and no second provider. If the key is missing the app says so plainly
-// instead of returning canned text that looks like a real AI answer.
+// Free reasoning models (Nemotron / Qwen "thinking") can take well over 20s to
+// answer, especially on a cold start. The old 20s limit aborted those calls.
+const AI_REQUEST_TIMEOUT_MS = 45000;
+const AI_MAX_RETRIES = 1;
+
+// Errors that mean "the network hiccuped", not "the request is wrong". Expo's
+// fetch reports an aborted request as "fetch failed: Fetch request has been
+// canceled" (NOT an AbortError), which the old code failed to recognise — so a
+// slow reply was treated as a fatal error and the fallback model never ran.
+const TRANSIENT_NETWORK_RE =
+  /network request failed|failed to fetch|fetch failed|cancell?ed|aborted|timed out|timeout|socket|connection (reset|closed|lost)|econnreset/i;
+
+
 function missingKeyMessage() {
   return `${AI_BOT_NAME} is not configured yet — EXPO_PUBLIC_OPENROUTER_API_KEY is missing. Add your OpenRouter key to .env (or to the EAS environment variables for a build) and restart the app.`;
 }
 
-async function fetchWithTimeout(url, options, timeoutMs = AI_REQUEST_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+function makeTimeoutError(timeoutMs) {
+  const error = new Error(`Request timed out after ${timeoutMs / 1000}s`);
+  error.retryable = true;
+  error.timedOut = true;
+  return error;
+}
+
+// Sends the request AND reads the whole body under one timeout. (Previously
+// only the headers were covered, so a stalled body read could hang forever and
+// leave "HiveAI is typing…" on screen.)
+async function fetchTextWithTimeout(url, options, timeoutMs = AI_REQUEST_TIMEOUT_MS) {
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const requestOptions = controller ? { ...options, signal: controller.signal } : options;
+  let timer;
+  let timedOut = false;
+
+  const work = (async () => {
+    const res = await fetch(url, requestOptions);
+    const body = await res.text();
+    return { res, body };
+  })();
+  // If the timeout wins the race, the aborted request rejects later — swallow
+  // that so it doesn't surface as an unhandled promise rejection.
+  work.catch(() => {});
+
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      if (controller) controller.abort();
+      reject(makeTimeoutError(timeoutMs));
+    }, timeoutMs);
+  });
+
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    return await Promise.race([work, timeout]);
   } catch (e) {
-    if (e.name === 'AbortError') {
-      throw new Error(`Request timed out after ${timeoutMs / 1000}s`);
-    }
+    if (timedOut) throw makeTimeoutError(timeoutMs);
+    if (TRANSIENT_NETWORK_RE.test(`${e?.name || ''} ${e?.message || ''}`)) e.retryable = true;
     throw e;
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
 
-async function callOpenRouter(messages, maxTokens, model = AI_MODEL) {
-  const res = await fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-      'HTTP-Referer': 'https://hiveai.app',
-      'X-Title': 'HiveAI',
-    },
-
-    body: JSON.stringify({
-      model,
-      messages,
-      max_tokens: maxTokens,
-      reasoning: { enabled: false },
-    }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `OpenRouter API error ${res.status}`);
+// Only the assistant's real answer. We deliberately do NOT fall back to
+// `message.reasoning` any more — that is the model's private chain-of-thought
+// and showed up as a garbled "reply" whenever the answer itself came back empty.
+function getResponseText(data) {
+  const message = data?.choices?.[0]?.message;
+  const content = message?.content;
+  if (typeof content === 'string') return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .filter((part) => typeof part?.text === 'string' || typeof part?.content === 'string')
+      .map((part) => part.text || part.content)
+      .join('')
+      .trim();
   }
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content?.trim() || null;
+  if (typeof data?.choices?.[0]?.text === 'string') return data.choices[0].text.trim();
+  return '';
+}
+
+function isRetryableProviderError(error) {
+  return error?.retryable === true || /^(408|425|429|5\d\d)$/.test(String(error?.status || ''));
+}
+
+async function callOpenRouter(messages, maxTokens, model = AI_MODEL) {
+  let lastError;
+
+  for (let attempt = 0; attempt <= AI_MAX_RETRIES; attempt += 1) {
+    try {
+      const { res, body: rawBody } = await fetchTextWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+          'HTTP-Referer': 'https://hiveai.app',
+          'X-Title': 'HiveAI',
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          max_tokens: maxTokens,
+          provider: { allow_fallbacks: true },
+        }),
+      });
+
+      let data = {};
+      try {
+        data = rawBody ? JSON.parse(rawBody) : {};
+      } catch {
+        const error = new Error(`AI provider returned an invalid response (HTTP ${res.status}).`);
+        error.status = res.status;
+        error.retryable = true;
+        throw error;
+      }
+
+      // OpenRouter can answer HTTP 200 with an `error` object in the body when
+      // the upstream provider fails mid-request — treat that as a failure too.
+      if (!res.ok || data?.error) {
+        const status = res.ok ? Number(data?.error?.code) || 502 : res.status;
+        const error = new Error(data?.error?.message || `OpenRouter API error ${status}`);
+        error.status = status;
+        error.retryable = status === 408 || status === 425 || status === 429 || status >= 500;
+        // OpenRouter's :free models share ONE daily request budget (50/day
+        // until $10 of credits were ever bought). When that is used up every
+        // free model fails the same way, so retrying / falling back only
+        // wastes more quota.
+        const detail = `${data?.error?.message || ''} ${JSON.stringify(data?.error?.metadata || {})}`;
+        error.dailyLimit = status === 429 && /per-day|per day|daily/i.test(detail);
+        throw error;
+      }
+
+      const text = getResponseText(data);
+      if (!text) {
+        const finish = data?.choices?.[0]?.finish_reason || 'unknown';
+        const error = new Error(`OpenRouter returned an empty response (finish_reason: ${finish}).`);
+        error.retryable = true;
+        throw error;
+      }
+      return text;
+    } catch (error) {
+      lastError = error;
+      console.warn('[ai] request failed', {
+        model,
+        attempt: attempt + 1,
+        status: error?.status,
+        message: String(error?.message || '').slice(0, 200),
+      });
+      // A timeout means this model is too slow right now — retrying the same
+      // model just burns another full timeout, so go straight to the fallback.
+      if (!isRetryableProviderError(error) || error.timedOut || error.dailyLimit || error.status === 429 || attempt === AI_MAX_RETRIES) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 700 * (attempt + 1)));
+    }
+  }
+
+  throw lastError || new Error('AI provider request failed.');
 }
 
 // Calls OpenRouter, the only AI provider this project uses.
@@ -62,7 +165,30 @@ async function callAIProvider(messages, maxTokens) {
   if (!OPENROUTER_API_KEY) {
     throw new Error('EXPO_PUBLIC_OPENROUTER_API_KEY is not configured.');
   }
-  return await callOpenRouter(messages, maxTokens);
+  try {
+    return await callOpenRouter(messages, maxTokens, AI_MODEL);
+  } catch (primaryError) {
+    const canUseFallback = AI_FALLBACK_MODEL && AI_FALLBACK_MODEL !== AI_MODEL;
+    // A bad/revoked key fails on every model, so don't waste time on the
+    // fallback. Anything else (timeout, 429, 5xx, empty reply, cancelled
+    // request, bad model id…) is worth one attempt on the second model.
+    const isAuthError = [401, 403].includes(Number(primaryError?.status));
+    if (!canUseFallback || isAuthError || primaryError?.dailyLimit) throw primaryError;
+
+    console.warn('[ai] primary model failed, trying fallback model', {
+      primaryModel: AI_MODEL,
+      fallbackModel: AI_FALLBACK_MODEL,
+      status: primaryError.status,
+      message: String(primaryError?.message || '').slice(0, 200),
+    });
+    try {
+      return await callOpenRouter(messages, maxTokens, AI_FALLBACK_MODEL);
+    } catch (fallbackError) {
+      // Keep BOTH reasons so the debug line on screen tells the whole story.
+      fallbackError.message = `${fallbackError.message} | primary model (${AI_MODEL}) said: ${primaryError.message}`;
+      throw fallbackError;
+    }
+  }
 }
 
 // Shown instead of calling a real (paid) AI provider once a user is over
@@ -107,23 +233,19 @@ export function aiCommandHelpMessage() {
 // memory of the conversation (README Phase 5: "AI conversation memory")
 // instead of answering each mention in total isolation.
 export async function generateAIReply(userMessage, senderName, conversationHistory = []) {
-  const cleaned = userMessage.replace(/@(?:HiveAI|AI)\b/gi, '').trim();
+  const safeMessage = typeof userMessage === 'string' ? userMessage : '';
+  const cleaned = safeMessage.replace(/@(?:HiveAI|AI)\b/gi, '').trim();
 
-  const promptText = cleaned || userMessage.trim() || 'Hello';
+  const promptText = cleaned || safeMessage.trim() || 'Hello';
 
   if (!OPENROUTER_API_KEY) {
     return missingKeyMessage();
   }
 
-  // Naming the sender matters in a group chat: several people can message
-  // within moments of each other, and each gets a separate AI reply, so
-  // telling the model who's asking keeps its wording (e.g. "Hey <name>...")
-  // clearly tied to the right person instead of reading as generic.
+
   const senderContext = senderName ? ` You're replying to a group chat message from ${senderName}.` : '';
   const systemPrompt = `You are ${AI_BOT_NAME}, a helpful AI teammate in a group chat app.${senderContext} Be concise, friendly, and practical. Reply in the same language the user uses (English or Urdu). Use the recent conversation history (if provided) to stay on topic and avoid re-asking things already covered. Always write at least one sentence back, even for a short greeting like "hi" or "hello" — never return an empty reply.`;
 
-  // Turn the last few real messages into actual chat turns instead of one
-  // flattened block of text, so the model can follow who said what.
   const historyMessages = (conversationHistory || [])
     .slice(-8)
     .filter((m) => m && m.text && m.text.trim())
@@ -139,59 +261,74 @@ export async function generateAIReply(userMessage, senderName, conversationHisto
   ];
 
   try {
-    // 350 tokens is plenty for a group-chat-style answer and generates
-    // noticeably faster than 400+ on the free models this app defaults to.
-    // Only retry with a larger budget on the rare empty-reply case — most
-    // requests never touch this second call at all.
-    let reply = await callAIProvider(chatMessages, 350);
+    let reply = await callAIProvider(chatMessages, 1024);
 
     if (!reply || !reply.trim()) {
-      reply = await callAIProvider(chatMessages, 600);
+      reply = await callAIProvider(chatMessages, 2048);
     }
 
     return (reply && reply.trim()) || `Hey! 👋 I'm ${AI_BOT_NAME} — how can I help?`;
   } catch (e) {
-    // Never put e.message directly in a chat message — it can contain raw
-    // provider/API text (keys, internal error codes, etc.) that has no
-    // business being shown to end users in a group chat. Log the real error
-    // for debugging and send back a friendly, generic fallback instead.
     console.error('generateAIReply error:', e);
     return `Sorry, I ran into a problem answering that just now. Please try again in a moment 🙏${aiFailureHint(e)}`;
   }
 }
 
-// Turns the caught error into a short, SAFE-to-show category hint appended
-// to the generic failure message above — no keys, no raw provider text,
-// just enough for whoever's testing the build to know where to look. This
-// exists because a build (unlike Expo Go, where you can watch the Metro
-// terminal) usually has no visible console, so without this the exact same
-// generic "I ran into a problem" message shows up whether the real cause is
-// a missing/invalid API key, no internet, or the provider being down —
-// three completely different fixes that were previously indistinguishable
-// from inside the app itself.
-function aiFailureHint(e) {
+
+function categoryHint(e) {
   const msg = String(e?.message || '').toLowerCase();
 
   if (/401|unauthorized|invalid.*(api.?key|credentials)|no auth credentials/.test(msg)) {
     return '\n\n_(debug: AI provider rejected the API key — check that EXPO_PUBLIC_OPENROUTER_API_KEY is set correctly for this build, e.g. via EAS environment variables, then rebuild.)_';
   }
-  if (/network request failed|failed to fetch|timed out|timeout/.test(msg)) {
-    return '\n\n_(debug: could not reach the AI provider — check the device has a working internet connection.)_';
+  if (/network request failed|failed to fetch|fetch failed|cancell?ed|aborted|timed out|timeout/.test(msg)) {
+    return '\n\n_(debug: the AI provider took too long or the connection dropped — check the internet connection and try again. Details: ' + String(e?.message || '').slice(0, 200) + ')_';
+  }
+  if (/per-day|per day|daily/.test(msg) && /429|rate.?limit|free/.test(msg)) {
+    return '\n\n_(debug: OpenRouter DAILY free-model limit reached (50 requests/day on accounts that never bought credits — shared by all :free models, and failed attempts count too). It resets at 00:00 UTC (05:00 Pakistan time). To lift it to 1000/day, buy $10 of OpenRouter credits once.)_';
   }
   if (/429|rate.?limit/.test(msg)) {
     return '\n\n_(debug: AI provider rate-limited this request — the free model is temporarily overloaded, try again shortly.)_';
   }
+
+  if (/402|payment required|insufficient.*(credit|balance|quota)|requires? (a )?payment/.test(msg)) {
+    return '\n\n_(debug: OpenRouter rejected this as a payment/credits issue — free-tier `:free` models are rate-limited per key and may need a linked payment method or a wait before more requests go through. Check the OpenRouter dashboard for this key\'s usage/limits.)_';
+  }
+  // A model ID that's been renamed/retired/typo'd comes back as 400/404 with
+  // "not a valid model id" or similar — again previously silent.
+  if (/404|400|not found|no endpoints found|invalid model|not a valid model/.test(msg)) {
+    return '\n\n_(debug: OpenRouter rejected the request — the configured model ID may be invalid, renamed, or retired. Double-check AI_MODEL/AI_VISION_MODEL/EMBEDDING_MODEL in src/config.js against OpenRouter\'s current model list.)_';
+  }
   if (/5\d\d/.test(msg)) {
     return '\n\n_(debug: AI provider returned a server error — likely temporary on their end.)_';
+  }
+
+  const raw = String(e?.message || '').trim();
+  if (raw) {
+    return `\n\n_(debug: ${raw.slice(0, 200)})_`;
   }
   return '';
 }
 
 
-// Builds the de-duplicated "Sources" list shown under a RAG answer
-// (README Phase 4: "source citations"). Chunks are already sorted by
-// relevance by retrieveContext(); this keeps the first (best) score seen
-// per file rather than listing every chunk from the same document.
+// Friendly category line + the raw provider/network message, so the on-screen
+// "(debug: …)" note always says exactly what went wrong (dev builds only need
+// to read the bubble instead of hunting through Metro logs).
+function aiFailureHint(e) {
+  const category = categoryHint(e);
+  const raw = String(e?.message || '').trim();
+  let out;
+  if (!category) {
+    out = raw ? `\n\n_(debug: ${raw.slice(0, 300)})_` : '\n\n_(debug: no error message)_';
+  } else if (!raw || category.includes(raw.slice(0, 40))) {
+    out = category;
+  } else {
+    out = `${category}\n_raw: ${raw.slice(0, 300)}_`;
+  }
+  // Version stamp: if this is missing on screen, the phone is running an OLD bundle.
+  return `${out}\n_[ai ${AI_SERVICE_VERSION}]_`;
+}
+
 function buildSources(contextChunks) {
   const byFile = new Map();
   contextChunks.forEach((c, i) => {
@@ -202,8 +339,7 @@ function buildSources(contextChunks) {
   return Array.from(byFile.values());
 }
 
-// Returns { text, sources } instead of a bare string so the UI can render a
-// "Sources" section under the answer (README Phase 4: "source citations").
+
 export async function generateRAGAnswer(question, contextChunks) {
   if (!contextChunks || contextChunks.length === 0) {
     return {
@@ -233,23 +369,19 @@ export async function generateRAGAnswer(question, contextChunks) {
         },
         { role: 'user', content: question },
       ],
-      500
+      1024
     );
     return { text: reply || 'Could not generate an answer.', sources };
   } catch (e) {
     console.error('generateRAGAnswer error:', e);
     return {
-      text: `Sorry, I couldn't read through the document(s) just now. Please try again in a moment 🙏`,
+      text: `Sorry, I couldn't read through the document(s) just now. Please try again in a moment 🙏${aiFailureHint(e)}`,
       sources,
     };
   }
 }
 
 
-// Returns { text, model } instead of a bare string so callers
-// (AIAssistantScreen, messages.js) can log usage/analytics against the model
-// that actually answered, keeping the AI Usage screen's per-model breakdown
-// accurate.
 export async function analyzeImageContent(fileName, base64DataUrl, userPrompt) {
   if (!OPENROUTER_API_KEY) {
     return {
@@ -277,19 +409,18 @@ export async function analyzeImageContent(fileName, base64DataUrl, userPrompt) {
   ];
 
   try {
-    const reply = await callOpenRouter(visionMessages, 400, AI_VISION_MODEL);
+    const reply = await callOpenRouter(visionMessages, 1024, AI_VISION_MODEL);
     return { text: reply?.trim() || 'Could not analyze the image.', model: AI_VISION_MODEL };
   } catch (e) {
     console.error('analyzeImageContent error:', e);
     return {
-      text: `Sorry, I couldn't analyze that image just now. Please try again in a moment 🙏`,
+      text: `Sorry, I couldn't analyze that image just now. Please try again in a moment 🙏${aiFailureHint(e)}`,
       model: AI_VISION_MODEL,
     };
   }
 }
 
-// Summarizes a group chat's recent messages into key takeaways. Used by
-// ConversationSummaryScreen ("AI Summary").
+
 export async function generateConversationSummary(messages) {
   const realMessages = (messages || []).filter((m) => m.text && m.text.trim());
 
@@ -315,18 +446,16 @@ export async function generateConversationSummary(messages) {
         },
         { role: 'user', content: transcript },
       ],
-      500
+      1024
     );
     return reply || 'Could not generate a summary.';
   } catch (e) {
     console.error('generateConversationSummary error:', e);
-    return `Sorry, I couldn't summarize this conversation just now. Please try again in a moment 🙏`;
+    return `Sorry, I couldn't summarize this conversation just now. Please try again in a moment 🙏${aiFailureHint(e)}`;
   }
 }
 
-// Pulls out concrete action items / open questions from a group chat
-// (README Phase 5: "action-item extraction" + "AI task generation"). Used
-// by both the "tasks" AI command (@HiveAI tasks) and a dedicated screen.
+
 export async function extractActionItems(messages) {
   const realMessages = (messages || []).filter((m) => m.text && m.text.trim());
 
@@ -352,11 +481,11 @@ export async function extractActionItems(messages) {
         },
         { role: 'user', content: transcript },
       ],
-      500
+      1024
     );
     return reply || 'Could not extract action items.';
   } catch (e) {
     console.error('extractActionItems error:', e);
-    return `Sorry, I couldn't extract action items just now. Please try again in a moment 🙏`;
+    return `Sorry, I couldn't extract action items just now. Please try again in a moment 🙏${aiFailureHint(e)}`;
   }
 }

@@ -11,6 +11,7 @@ export async function createNotification({
   groupName,
   inviterUid,
   inviterName,
+  requestId,
   status,
 }) {
   console.log('[notifications] createNotification:', { userId, type, title });
@@ -22,11 +23,15 @@ export async function createNotification({
       body,
       groupId: groupId || null,
       groupName: groupName || null,
-      // Only 'group_invite' notifications use these — they let the invited
-      // user Accept/Decline right from the Notifications screen instead of
-      // being silently added to the group.
+      // 'group_invite' and 'friend_request' notifications use these — they
+      // let the recipient Accept/Decline right from the Notifications
+      // screen instead of being silently added / having to dig into the
+      // Friends screen's Requests tab.
       inviterUid: inviterUid || null,
       inviterName: inviterName || null,
+      // Only 'friend_request' sets this — the id of the friendRequests doc
+      // it came from, so Accept/Decline here can act on the right request.
+      requestId: requestId || null,
       status: status || null,
       read: false,
       createdAt: serverTimestamp(),

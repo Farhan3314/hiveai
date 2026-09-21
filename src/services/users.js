@@ -96,7 +96,16 @@ export async function findUserByEmail(email) {
 // clobber each other.
 export async function incrementAIUsage(uid, amount = 1) {
   const ref = doc(db, 'users', uid);
-  await updateDoc(ref, { aiTokensUsed: increment(amount) });
+  // Also stamps aiUsageMonth (without clobbering it if already set to the
+  // current month) so the running total this increments always has a
+  // month tag on it — belt-and-suspenders alongside the reset in
+  // checkAIUsageLimit, in case some future call site ever increments
+  // usage without checking the limit first.
+  await setDoc(ref, { aiTokensUsed: increment(amount), aiUsageMonth: currentMonthKey() }, { merge: true });
+}
+
+function currentMonthKey(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 }
 
 // Checks whether a user still has AI requests left on their plan this month,
@@ -104,12 +113,31 @@ export async function incrementAIUsage(uid, amount = 1) {
 // (group chat, AI Assistant tab, file analysis, etc.) should call this first
 // — previously only the AI Usage screen showed "limit reached", but nothing
 // actually stopped a paid API call from firing once someone was over it.
+//
+// BUGFIX: aiTokensUsed was a lifetime counter that only ever went up
+// (incrementAIUsage does `increment(amount)` and nothing ever reset it).
+// Every plan (PLANS in config.js) is advertised and displayed as a
+// *monthly* allowance ("50 AI requests/mo", "requests remaining this
+// month" on AIUsageScreen), so a Free user who had sent 50 AI messages
+// EVER — not this month — was permanently locked out, forever, even
+// though the UI kept telling them their limit would come back. Track
+// which calendar month the current `aiTokensUsed` count belongs to
+// (`aiUsageMonth`, e.g. "2026-09") and reset the counter to 0 the first
+// time this is checked in a new month, so the limit actually behaves like
+// the "per month" allowance every screen already claims it is.
 export async function checkAIUsageLimit(uid) {
   const ref = doc(db, 'users', uid);
   const snap = await getDoc(ref);
   const data = snap.data() || {};
   const plan = data.plan || 'free';
-  const used = data.aiTokensUsed || 0;
+  const monthKey = currentMonthKey();
+
+  let used = data.aiTokensUsed || 0;
+  if (data.aiUsageMonth !== monthKey) {
+    used = 0;
+    await updateDoc(ref, { aiTokensUsed: 0, aiUsageMonth: monthKey });
+  }
+
   const limit = PLANS[plan]?.aiLimit ?? PLANS.free.aiLimit;
   return { allowed: used < limit, used, limit, plan };
 }

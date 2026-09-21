@@ -97,7 +97,7 @@ export default function AIAssistantScreen() {
   const generateAndSendReply = async (chatId, trimmed) => {
     // Check the plan limit BEFORE spending a real AI call — mirrors the
     // same guard in group chat (services/messages.js).
-    const { allowed, plan, limit } = await checkAIUsageLimit(user.uid).catch(() => ({ allowed: true }));
+    const { allowed, plan, limit } = await checkAIUsageLimit(user.uid);
 
     let reply;
     let sources = [];
@@ -127,7 +127,9 @@ export default function AIAssistantScreen() {
       } else {
         reply = await generateAIReply(trimmed, null, history);
       }
-      await incrementAIUsage(user.uid, 1);
+      await incrementAIUsage(user.uid, 1).catch((error) =>
+        console.error('[assistant] incrementAIUsage failed after response:', error)
+      );
       await logAIUsage({
         userId: user.uid,
         chatId,
@@ -136,7 +138,7 @@ export default function AIAssistantScreen() {
         inputText: trimmed,
         outputText: reply,
         subscriptionPlan: plan,
-      });
+      }).catch((error) => console.error('[assistant] logAIUsage failed after response:', error));
     }
 
     await addAIChatMessage(user.uid, chatId, {
@@ -173,7 +175,7 @@ export default function AIAssistantScreen() {
         ...(caption ? { text: caption } : {}),
       });
 
-      const { allowed, plan, limit } = await checkAIUsageLimit(user.uid).catch(() => ({ allowed: true }));
+      const { allowed, plan, limit } = await checkAIUsageLimit(user.uid);
       let reply;
       if (!allowed) {
         reply = aiLimitReachedMessage(plan, limit);
@@ -189,7 +191,9 @@ export default function AIAssistantScreen() {
           ? await analyzeImageContent(attachment.name, dataUrl, caption)
           : { text: 'Sorry, I could not read that image.', model: 'none' };
         reply = result.text;
-        await incrementAIUsage(user.uid, 1);
+        await incrementAIUsage(user.uid, 1).catch((error) =>
+          console.error('[assistant] image usage increment failed after response:', error)
+        );
         await logAIUsage({
           userId: user.uid,
           chatId,
@@ -198,7 +202,7 @@ export default function AIAssistantScreen() {
           inputText: caption || attachment.name,
           outputText: reply,
           subscriptionPlan: plan,
-        });
+        }).catch((error) => console.error('[assistant] image usage log failed after response:', error));
       }
 
       await addAIChatMessage(user.uid, chatId, {

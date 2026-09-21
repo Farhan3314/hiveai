@@ -14,6 +14,7 @@ import {
   createNotification,
 } from '../../services/notifications';
 import { addMemberToGroup, getGroup } from '../../services/groups';
+import { acceptFriendRequest, rejectFriendRequest } from '../../services/friends';
 import { formatRelativeTime } from '../../utils/user';
 
 const ICON_MAP = {
@@ -41,10 +42,12 @@ export default function NotificationsScreen() {
   }, [user?.uid]);
 
   const handlePress = async (notif) => {
-    // Pending group invites are handled by the Accept/Decline buttons, not
-    // by tapping the row (tapping would otherwise jump into a group chat
-    // the person hasn't actually joined yet).
+    // Pending group invites and friend requests are handled by their own
+    // Accept/Decline buttons, not by tapping the row (tapping a pending
+    // group invite would otherwise jump into a group chat the person hasn't
+    // actually joined yet; a pending friend request just has nowhere to go).
     if (notif.type === 'group_invite' && notif.status === 'pending') return;
+    if (notif.type === 'friend_request' && notif.status === 'pending') return;
     if (!notif.read) await markNotificationRead(notif.id);
     if (notif.groupId) {
       navigation.navigate('GroupChat', { groupId: notif.groupId, groupName: notif.groupName || 'Group' });
@@ -93,6 +96,35 @@ export default function NotificationsScreen() {
     }
   };
 
+  // Mirrors handleAcceptInvite/handleDeclineInvite above, but for
+  // 'friend_request' notifications — this is what lets someone accept or
+  // decline a friend request right from the bell icon instead of having to
+  // go find it in the Friends screen's Requests tab. acceptFriendRequest /
+  // rejectFriendRequest already flip this exact notification's status
+  // themselves (see syncFriendRequestNotifications in services/friends.js),
+  // so there's no separate updateNotification call needed here on success.
+  const handleAcceptFriendRequest = async (notif) => {
+    setRespondingId(notif.id);
+    try {
+      await acceptFriendRequest(notif.requestId);
+    } catch (e) {
+      Alert.alert('Error', e.message || 'Could not accept the friend request');
+    } finally {
+      setRespondingId(null);
+    }
+  };
+
+  const handleDeclineFriendRequest = async (notif) => {
+    setRespondingId(notif.id);
+    try {
+      await rejectFriendRequest(notif.requestId);
+    } catch (e) {
+      Alert.alert('Error', e.message || 'Could not decline the friend request');
+    } finally {
+      setRespondingId(null);
+    }
+  };
+
   const unreadCount = notifications.filter((n) => !n.read).length;
 
   return (
@@ -120,6 +152,7 @@ export default function NotificationsScreen() {
         }
         renderItem={({ item }) => {
           const isPendingInvite = item.type === 'group_invite' && item.status === 'pending';
+          const isPendingFriendRequest = item.type === 'friend_request' && item.status === 'pending';
           const responding = respondingId === item.id;
           return (
             <Pressable
@@ -151,20 +184,27 @@ export default function NotificationsScreen() {
                       {item.status === 'accepted' ? 'You joined this group' : 'Invite declined'}
                     </Text>
                   )}
+                  {item.type === 'friend_request' && item.status && item.status !== 'pending' && (
+                    <Text style={[typography.small, { color: colors.textMuted, marginTop: 2 }]}>
+                      {item.status === 'accepted' ? 'You are now friends' : 'Request declined'}
+                    </Text>
+                  )}
                 </View>
                 <Text style={[typography.small, { color: colors.textMuted }]}>
                   {formatRelativeTime(item.createdAt)}
                 </Text>
               </View>
 
-              {isPendingInvite && (
+              {(isPendingInvite || isPendingFriendRequest) && (
                 <View style={styles.inviteActions}>
                   {responding ? (
                     <ActivityIndicator color={colors.primary} />
                   ) : (
                     <>
                       <Pressable
-                        onPress={() => handleDeclineInvite(item)}
+                        onPress={() =>
+                          isPendingInvite ? handleDeclineInvite(item) : handleDeclineFriendRequest(item)
+                        }
                         style={[styles.inviteBtn, styles.declineBtn, { borderColor: colors.border, borderRadius: radius.sm }]}
                       >
                         <Text style={[typography.caption, { color: colors.textSecondary, fontWeight: '700' }]}>
@@ -172,7 +212,9 @@ export default function NotificationsScreen() {
                         </Text>
                       </Pressable>
                       <Pressable
-                        onPress={() => handleAcceptInvite(item)}
+                        onPress={() =>
+                          isPendingInvite ? handleAcceptInvite(item) : handleAcceptFriendRequest(item)
+                        }
                         style={[styles.inviteBtn, { backgroundColor: colors.primary, borderRadius: radius.sm }]}
                       >
                         <Text style={[typography.caption, { color: colors.textOnPrimary, fontWeight: '700' }]}>
