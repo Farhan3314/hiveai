@@ -1,26 +1,55 @@
 {
   "expo": {
     "name": "HiveAI",
-    "slug": "HiveAI",
+    "slug": "hiveai",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "scheme": "hiveai",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "assetBundlePatterns": ["**/*"],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.technoinsider.HiveAI"
     },
     "android": {
+      "package": "com.technoinsider.HiveAI",
+      "versionCode": 1,
+      "googleServicesFile": "./google-services.json",
+      "edgeToEdgeEnabled": true,
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
-      },
-      "predictiveBackGestureEnabled": false,
-      "package": "com.technoinsider.HiveAI"
+        "monochromeImage": "./assets/android-icon-monochrome.png",
+        "backgroundColor": "#E6F4FE"
+      }
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#FFFFFF"
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/android-icon-foreground.png",
+          "color": "#023c69"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow HiveAI to access your photos so you can share them in chats."
+        }
+      ]
+    ]
   }
 }

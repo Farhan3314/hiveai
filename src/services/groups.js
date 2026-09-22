@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   addDoc,
+  setDoc,
   updateDoc,
   deleteDoc,
   getDoc,
@@ -15,6 +16,7 @@ import {
   increment,
 } from 'firebase/firestore';
 import { db } from './firebase';
+import { createNotification } from './notifications';
 
 // Palette drawn from the app's own brand tokens (honey/teal) plus a couple
 // of warm neighbors — variety for telling groups apart at a glance, without
@@ -78,6 +80,109 @@ export async function createGroup({ name, createdBy, memberIds = [], creatorName
 export async function getGroup(groupId) {
   const snap = await getDoc(doc(db, 'groups', groupId));
   return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+}
+
+// -----------------------------------------------------------------------
+// Shareable invite links ("hiveai://join/ABC123")
+// -----------------------------------------------------------------------
+// A group's invite code lives in TWO places on purpose:
+//  - groups/{groupId}.inviteCode — so we never generate a second code for
+//    a group that already has one (Share button reuses the same link).
+//  - groupInvites/{code} — a top-level doc keyed by the code itself, so
+//    looking a link up is a single cheap get() instead of a query anyone
+//    could run over every group. This is also what makes it safe to let
+//    ANY signed-in user (not just members) read enough to preview/join —
+//    they can only see the one group the code points to, not the whole
+//    groups collection.
+// Characters that look alike (0/O, 1/I/l) are excluded so a code read
+// aloud or typed by hand doesn't misfire.
+const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function generateInviteCode(length = 6) {
+  let out = '';
+  for (let i = 0; i < length; i++) {
+    out += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+  }
+  return out;
+}
+
+// Returns the group's existing invite code if it still has a live
+// groupInvites doc, otherwise mints a fresh one (retrying on the
+// astronomically unlikely chance of a collision) and stores it both
+// places described above.
+export async function getOrCreateGroupInviteCode(groupId, groupName, userId) {
+  const groupRef = doc(db, 'groups', groupId);
+  const groupSnap = await getDoc(groupRef);
+  if (!groupSnap.exists()) throw new Error('This group no longer exists.');
+
+  const existingCode = groupSnap.data().inviteCode;
+  if (existingCode) {
+    const existingInvite = await getDoc(doc(db, 'groupInvites', existingCode));
+    if (existingInvite.exists() && existingInvite.data().active !== false) {
+      return existingCode;
+    }
+  }
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const code = generateInviteCode();
+    const inviteRef = doc(db, 'groupInvites', code);
+    const collision = await getDoc(inviteRef);
+    if (collision.exists()) continue; // extremely rare, just try another code
+
+    await setDoc(inviteRef, {
+      groupId,
+      groupName: groupName || groupSnap.data().name || 'Group',
+      createdBy: userId,
+      active: true,
+      createdAt: serverTimestamp(),
+    });
+    await updateDoc(groupRef, { inviteCode: code });
+    console.log('[groups] getOrCreateGroupInviteCode: created', { groupId, code });
+    return code;
+  }
+
+  throw new Error('Could not generate an invite link right now — please try again.');
+}
+
+// Looks a code up WITHOUT joining anything — used to show "Join <group
+// name>?" before the user commits, and to validate a code typed by hand.
+export async function getGroupInvitePreview(code) {
+  const clean = (code || '').trim().toUpperCase();
+  if (!clean) return null;
+  const snap = await getDoc(doc(db, 'groupInvites', clean));
+  if (!snap.exists() || snap.data().active === false) return null;
+  return { code: clean, ...snap.data() };
+}
+
+// The actual join. Reuses addMemberToGroup so it goes through the exact
+// same Firestore rules path as accepting a normal group-invite
+// notification (self-adding your own uid is explicitly allowed there).
+export async function joinGroupByCode(code, user) {
+  const invite = await getGroupInvitePreview(code);
+  if (!invite) {
+    throw new Error('This invite link is invalid or has expired.');
+  }
+  const group = await getGroup(invite.groupId);
+  if (!group) throw new Error('This group no longer exists.');
+
+  if (group.memberIds?.includes(user.uid)) {
+    return { groupId: invite.groupId, groupName: group.name, alreadyMember: true };
+  }
+
+  await addMemberToGroup(invite.groupId, user.uid);
+
+  if (group.createdBy && group.createdBy !== user.uid) {
+    await createNotification({
+      userId: group.createdBy,
+      type: 'group_member_joined',
+      title: 'New member joined',
+      body: `${user.name || 'Someone'} joined "${group.name}" using your invite link`,
+      groupId: invite.groupId,
+      groupName: group.name,
+    });
+  }
+
+  return { groupId: invite.groupId, groupName: group.name, alreadyMember: false };
 }
 
 // NOTE: membersCount used to be computed on the client from a stale

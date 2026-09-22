@@ -28,6 +28,19 @@
         <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="exp+hiveai"/>
       </intent-filter>
+      <!-- Added for group invite links (hiveai colon slash slash join slash CODE).
+           This app already has a native android project generated, so
+           app.json's scheme field alone won't reach the compiled APK
+           until the project is prebuilt again. This intent-filter is the
+           same thing an Expo prebuild would generate, added directly so a
+           normal rebuild (expo run:android or an EAS build) picks it up
+           immediately, no full clean prebuild needed. -->
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW"/>
+        <category android:name="android.intent.category.DEFAULT"/>
+        <category android:name="android.intent.category.BROWSABLE"/>
+        <data android:scheme="hiveai"/>
+      </intent-filter>
     </activity>
   </application>
 </manifest>

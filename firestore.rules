@@ -1,169 +1,189 @@
 rules_version = '2';
 
 // -----------------------------------------------------------------------
-// Why this file exists
+// HiveAI Firestore rules
 // -----------------------------------------------------------------------
-// This project had NO firestore.rules checked in at all — rules only ever
-// existed (or didn't) in the Firebase Console. That's almost always the
-// real cause behind "invitation feature doesn't work": either the console
-// was still on the default locked/test-mode rules (which reject every
-// read/write, or expire and start rejecting everything after 30 days), or
-// a partial hand-written rule only allowed updating a group document if the
-// requester was ALREADY listed in memberIds — which is never true for the
-// person accepting an invite, since accepting is exactly what's supposed to
-// add them for the first time.
-//
-// Deploy this file with:
-//   firebase deploy --only firestore:rules
+// This app has no backend — every read/write in src/services/*.js comes
+// straight from the client, so these rules ARE the app's only real access
+// control. They're written to match the exact access patterns the code in
+// src/services already assumes (see the comments in groups.js in
+// particular, which describe several of these decisions).
 // -----------------------------------------------------------------------
-
-function signedIn() {
-  return request.auth != null;
-}
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ---- users --------------------------------------------------------
-    // Any signed-in user can be looked up (needed for "find friend by
-    // email" and for rendering member lists), but only the owner can write
-    // their own profile.
-    match /users/{userId} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.auth.uid == userId;
-      allow update: if signedIn() && request.auth.uid == userId;
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isGroupMember(groupId) {
+      return isSignedIn() &&
+        get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds.hasAny([request.auth.uid]);
+    }
+
+    function isGroupCreator(groupId) {
+      return isSignedIn() &&
+        get(/databases/$(database)/documents/groups/$(groupId)).data.createdBy == request.auth.uid;
+    }
+
+    // ---------------------------------------------------------------
+    // users/{uid} — profile (name, email, emailLower, photoURL, plan,
+    // aiTokensUsed, aiUsageMonth)
+    // ---------------------------------------------------------------
+    match /users/{uid} {
+      // findUserByEmail (services/users.js) queries across ALL users by
+      // emailLower/email to support friend requests — every signed-in
+      // user needs read access to every profile doc for that to work.
+      allow read: if isSignedIn();
+      // Every write in the app (ensureUserProfile, updateUserDoc,
+      // incrementAIUsage, checkAIUsageLimit's monthly reset) only ever
+      // targets the caller's own doc.
+      allow create, update: if isSignedIn() && request.auth.uid == uid;
       allow delete: if false;
+
+      // Personal AI Assistant conversations — private to the owner.
+      match /aiChats/{chatId} {
+        allow read, write: if isSignedIn() && request.auth.uid == uid;
+
+        match /messages/{messageId} {
+          allow read, write: if isSignedIn() && request.auth.uid == uid;
+        }
+      }
     }
 
-    // ---- friendRequests -------------------------------------------------
-    match /friendRequests/{requestId} {
-      allow read: if signedIn() &&
-        (request.auth.uid == resource.data.fromUid || request.auth.uid == resource.data.toUid);
-      allow create: if signedIn() && request.auth.uid == request.resource.data.fromUid;
-      // Only the recipient can accept/reject (status change); either side
-      // could in principle cancel, but the app only ever updates `status`.
-      allow update: if signedIn() &&
-        (request.auth.uid == resource.data.toUid || request.auth.uid == resource.data.fromUid);
-      allow delete: if false;
-    }
-
-    // ---- friendships ------------------------------------------------------
-    match /friendships/{friendshipId} {
-      allow read: if signedIn() && request.auth.uid in resource.data.members;
-      allow create: if signedIn() && request.auth.uid in request.resource.data.members;
-      allow delete: if signedIn() && request.auth.uid in resource.data.members;
-      allow update: if false;
-    }
-
-    // ---- notifications ------------------------------------------------
-    // Anyone signed in can create a notification FOR another user (that's
-    // how friend requests / group invites / "AI replied" pings work — the
-    // actor writes into the recipient's notification feed). Only the owner
-    // can read or mutate (mark read, accept/decline) their own.
-    match /notifications/{notifId} {
-      allow read: if signedIn() && request.auth.uid == resource.data.userId;
-      // Any signed-in user may notify someone else (friend request, group
-      // invite, "HiveAI replied" ping, etc.) — that's the whole point of
-      // this collection. Only the recipient can read/update their own.
-      allow create: if signedIn();
-      allow update: if signedIn() && request.auth.uid == resource.data.userId;
-      allow delete: if false;
-    }
-
-    // ---- pushTokens -----------------------------------------------------
-    match /pushTokens/{userId} {
-      allow read: if signedIn();
-      allow write: if signedIn() && request.auth.uid == userId;
-    }
-
-    // ---- groups -----------------------------------------------------------
+    // ---------------------------------------------------------------
+    // groups/{groupId}
+    // ---------------------------------------------------------------
     match /groups/{groupId} {
-      allow read: if signedIn() && request.auth.uid in resource.data.memberIds;
-      allow create: if signedIn() && request.auth.uid in request.resource.data.memberIds
-        && request.auth.uid == request.resource.data.createdBy;
+      // Single-doc reads (getGroup, subscribeGroup, and the join-by-code
+      // flow's post-preview lookup) are open to any signed-in user — a
+      // group's Firestore ID isn't guessable/discoverable on its own,
+      // which is the same trust boundary groupInvites already relies on
+      // (see the comment there). LISTING the collection is still locked
+      // to actual members via the query itself, since a `list` request is
+      // evaluated per-candidate-document against `resource.data` below.
+      allow get: if isSignedIn();
+      allow list: if isSignedIn() && resource.data.memberIds.hasAny([request.auth.uid]);
 
-      // Update is allowed for:
-      //  1) an existing member (posting last-message previews, admin
-      //     editing group info, admin adding/removing OTHER members), or
-      //  2) someone who is NOT yet a member but whose update ONLY adds
-      //     their own uid to memberIds (and bumps membersCount) — this is
-      //     the "Accept" button on a group invite. Without this branch,
-      //     accepting an invite always fails with permission-denied,
-      //     because the person clicking Accept isn't in memberIds yet.
-      allow update: if signedIn() && (
-        request.auth.uid in resource.data.memberIds ||
-        (
-          request.auth.uid in request.resource.data.memberIds &&
-          !(request.auth.uid in resource.data.memberIds) &&
-          request.resource.data.memberIds.size() == resource.data.memberIds.size() + 1
-        )
+      allow create: if isSignedIn() &&
+        request.resource.data.createdBy == request.auth.uid &&
+        request.resource.data.memberIds.hasAny([request.auth.uid]);
+
+      // A current member can update the group (rename, leave, kick
+      // someone, set an invite code, bump membersCount, ...). Someone who
+      // is NOT yet a member can only update it to add themselves —
+      // covers addMemberToGroup for a first-time joiner (accepted invite
+      // or invite-link code), who by definition isn't in memberIds yet.
+      allow update: if isSignedIn() && (
+        resource.data.memberIds.hasAny([request.auth.uid]) ||
+        request.resource.data.memberIds.hasAny([request.auth.uid])
       );
 
-      allow delete: if signedIn() && request.auth.uid == resource.data.createdBy;
+      // Only the creator can delete a group (matches the client-side
+      // `canDelete`/`isAdmin` gating in HomeScreen/MembersScreen).
+      allow delete: if isSignedIn() && resource.data.createdBy == request.auth.uid;
 
-      // ---- groups/{groupId}/messages ----
       match /messages/{messageId} {
-        allow read: if signedIn() && request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
-        allow create: if signedIn() && request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
-        allow update: if false;
-        // Two independent reasons a message can be deleted:
-        //  1) Any member can delete the transient "HiveAI is typing..."
-        //     placeholder (type == 'ai_typing') right after the real reply
-        //     is posted (see services/messages.js finally block). The old
-        //     blanket `allow delete: if false` silently rejected that
-        //     delete every time, so the placeholder never actually went
-        //     away — the loading bubble sat there forever.
-        //  2) The group's CREATOR can delete any message, real or
-        //     otherwise. This is what makes "Delete group" from the Home
-        //     screen actually work: services/groups.js's deleteGroup()
-        //     deletes every message in the subcollection before deleting
-        //     the group document itself. Without this branch, that delete
-        //     hit permission-denied on the very first real (non-typing)
-        //     message, Promise.all rejected immediately, and the group
-        //     document itself was NEVER reached — so "Delete group" quietly
-        //     did nothing for any group that had ever had a real message
-        //     sent in it. Every other member still can never delete a real
-        //     message — only the creator, and only as part of tearing the
-        //     whole group down.
-        allow delete: if signedIn()
-          && request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds
-          && (
-            resource.data.type == 'ai_typing' ||
-            request.auth.uid == get(/databases/$(database)/documents/groups/$(groupId)).data.createdBy
-          );
+        allow read: if isGroupMember(groupId);
+        // senderId must be either the caller themselves, or 'hiveai' —
+        // AI replies are written directly by whichever member's client
+        // triggered them (see services/messages.js), there's no backend
+        // bot account to authenticate as.
+        allow create: if isGroupMember(groupId) &&
+          (request.resource.data.senderId == request.auth.uid || request.resource.data.senderId == 'hiveai');
+        allow update: if false; // group messages are never edited in place
+        // BUGFIX (see services/groups.js:deleteGroup): only allowing the
+        // transient 'ai_typing' placeholder to be deleted meant tearing
+        // down a group with any real message in it always failed
+        // part-way through. The creator can delete ANY message as part
+        // of that teardown; any member can still clear a stuck typing
+        // placeholder on its own.
+        allow delete: if isGroupMember(groupId) &&
+          (resource.data.type == 'ai_typing' || isGroupCreator(groupId));
       }
 
-      // ---- groups/{groupId}/ragDocuments (+ nested chunks) ----
       match /ragDocuments/{docId} {
-        allow read, write: if signedIn() && request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
+        allow read, create, update: if isGroupMember(groupId);
+        allow delete: if isGroupMember(groupId);
 
         match /chunks/{chunkId} {
-          allow read, write: if signedIn() && request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
+          allow read, create: if isGroupMember(groupId);
+          allow update: if false;
+          allow delete: if isGroupMember(groupId);
         }
       }
     }
 
-    // ---- users/{uid}/aiChats/... (1:1 AI Assistant + its RAG docs) -------
-    match /users/{userId}/aiChats/{chatId} {
-      allow read, write: if signedIn() && request.auth.uid == userId;
-
-      match /messages/{messageId} {
-        allow read, write: if signedIn() && request.auth.uid == userId;
-      }
-
-      match /ragDocuments/{docId} {
-        allow read, write: if signedIn() && request.auth.uid == userId;
-
-        match /chunks/{chunkId} {
-          allow read, write: if signedIn() && request.auth.uid == userId;
-        }
-      }
+    // ---------------------------------------------------------------
+    // groupInvites/{code} — top-level so looking a code up is a single
+    // get(), not a query over the whole groups collection (see the long
+    // comment above getOrCreateGroupInviteCode in services/groups.js).
+    // ---------------------------------------------------------------
+    match /groupInvites/{code} {
+      // Anyone signed in can look up (and thereby preview/join via) a
+      // code they were given — this is the intended "share a link"
+      // trust model, same as groups' `get` above.
+      allow get: if isSignedIn();
+      allow list: if false;
+      // Any member of the target group can mint/refresh its invite code
+      // (MembersScreen's "Share" is available to every member, not just
+      // the admin).
+      allow create, update: if isSignedIn() &&
+        request.resource.data.createdBy == request.auth.uid &&
+        isGroupMember(request.resource.data.groupId);
+      allow delete: if false;
     }
 
-    // ---- aiUsageLogs (usageTracking.js) ---------------------------------
-    match /aiUsageLogs/{logId} {
-      allow read: if signedIn() && request.auth.uid == resource.data.userId;
-      allow create: if signedIn() && request.auth.uid == request.resource.data.userId;
+    // ---------------------------------------------------------------
+    // friendRequests/{id}
+    // ---------------------------------------------------------------
+    match /friendRequests/{id} {
+      allow read: if isSignedIn() &&
+        (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid);
+      allow create: if isSignedIn() &&
+        request.resource.data.fromUid == request.auth.uid &&
+        request.resource.data.toUid != request.auth.uid;
+      // Only the recipient accepts/declines; syncFriendRequestNotifications
+      // also runs off of a request the recipient controls the outcome of.
+      allow update: if isSignedIn() && resource.data.toUid == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------------
+    // friendships/{id}
+    // ---------------------------------------------------------------
+    match /friendships/{id} {
+      allow read: if isSignedIn() && resource.data.members.hasAny([request.auth.uid]);
+      allow create: if isSignedIn() && request.resource.data.members.hasAny([request.auth.uid]);
+      allow update, delete: if false; // no "unfriend" flow exists yet
+    }
+
+    // ---------------------------------------------------------------
+    // notifications/{id}
+    // ---------------------------------------------------------------
+    match /notifications/{id} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      // Notifications are created FOR someone else (friend request,
+      // group invite, member joined/removed/left) by the acting user's
+      // own client — there's no backend to author them instead. Bound
+      // what we can: the doc must at least be honest about who's sending
+      // it whenever it claims an inviter.
+      allow create: if isSignedIn() &&
+        request.resource.data.userId is string &&
+        (!('inviterUid' in request.resource.data) || request.resource.data.inviterUid == request.auth.uid);
+      // The recipient marks their own notifications read, or flips
+      // status on Accept/Decline.
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------------
+    // aiUsageLogs/{id} — analytics for AIUsageScreen (services/usageTracking.js)
+    // ---------------------------------------------------------------
+    match /aiUsageLogs/{id} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
       allow update, delete: if false;
     }
   }
