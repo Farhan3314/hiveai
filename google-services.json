@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "423537112416",
+    "project_id": "hive-ai-e4c99",
+    "storage_bucket": "hive-ai-e4c99.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:423537112416:android:1539844886b71d883e5a05",
+        "android_client_info": {
+          "package_name": "com.technoinsider.HiveAI"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDIpZBsziSJ5KkqYkNJqZelAoNcWRFNrfk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

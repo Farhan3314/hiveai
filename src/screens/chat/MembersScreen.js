@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Modal, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Modal, Alert, Share } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -7,9 +7,10 @@ import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { useTheme } from '../../theme/ThemeContext';
 import { useAuth } from '../../context/AuthContext';
-import { subscribeGroup, removeMemberFromGroup, leaveGroup } from '../../services/groups';
+import { subscribeGroup, removeMemberFromGroup, leaveGroup, getOrCreateGroupInviteCode } from '../../services/groups';
 import { subscribeFriends } from '../../services/friends';
 import { createNotification } from '../../services/notifications';
+import { buildGroupInviteMessage } from '../../utils/inviteLink';
 import Avatar from '../../components/Avatar';
 
 export default function MembersScreen() {
@@ -26,6 +27,7 @@ export default function MembersScreen() {
   const [inviteVisible, setInviteVisible] = useState(false);
   const [addingUid, setAddingUid] = useState(null);
   const [removingUid, setRemovingUid] = useState(null);
+  const [sharingLink, setSharingLink] = useState(false);
 
   const isAdmin = !!user?.uid && group?.createdBy === user.uid;
 
@@ -70,6 +72,27 @@ export default function MembersScreen() {
       Alert.alert('Error', e.message || 'Could not send invite');
     } finally {
       setAddingUid(null);
+    }
+  };
+
+  // Anyone in the group (not just the admin) can generate/share this link —
+  // it's the same idea as WhatsApp's group invite link. The code is reused
+  // across shares (getOrCreateGroupInviteCode only mints a new one the
+  // first time), so re-sharing later gives out the same link, not a
+  // different one each time.
+  const handleShareInviteLink = async () => {
+    if (!group) return;
+    setSharingLink(true);
+    try {
+      const code = await getOrCreateGroupInviteCode(groupId, groupName || group.name, user.uid);
+      await Share.share({
+        message: buildGroupInviteMessage(groupName || group.name, code),
+      });
+    } catch (e) {
+      console.error('[MembersScreen] handleShareInviteLink FAILED', { code: e.code, message: e.message });
+      Alert.alert('Error', e.message || 'Could not create an invite link.');
+    } finally {
+      setSharingLink(false);
     }
   };
 
@@ -180,6 +203,13 @@ export default function MembersScreen() {
         <Text style={[typography.h3, { color: colors.textPrimary, flex: 1, marginLeft: 10 }]}>
           Members
         </Text>
+        {sharingLink ? (
+          <ActivityIndicator color={colors.primary} style={{ marginRight: 16 }} />
+        ) : (
+          <Pressable onPress={handleShareInviteLink} hitSlop={10} style={{ marginRight: 16 }}>
+            <Ionicons name="share-social-outline" size={22} color={colors.primary} />
+          </Pressable>
+        )}
         <Pressable onPress={() => setInviteVisible(true)} hitSlop={10}>
           <Ionicons name="person-add" size={22} color={colors.primary} />
         </Pressable>

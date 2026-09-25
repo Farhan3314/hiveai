@@ -97,7 +97,7 @@ export default function AIAssistantScreen() {
   const generateAndSendReply = async (chatId, trimmed) => {
     // Check the plan limit BEFORE spending a real AI call — mirrors the
     // same guard in group chat (services/messages.js).
-    const { allowed, plan, limit } = await checkAIUsageLimit(user.uid).catch(() => ({ allowed: true }));
+    const { allowed, plan, limit } = await checkAIUsageLimit(user.uid);
 
     let reply;
     let sources = [];
@@ -127,7 +127,9 @@ export default function AIAssistantScreen() {
       } else {
         reply = await generateAIReply(trimmed, null, history);
       }
-      await incrementAIUsage(user.uid, 1);
+      await incrementAIUsage(user.uid, 1).catch((error) =>
+        console.error('[assistant] incrementAIUsage failed after response:', error)
+      );
       await logAIUsage({
         userId: user.uid,
         chatId,
@@ -136,7 +138,7 @@ export default function AIAssistantScreen() {
         inputText: trimmed,
         outputText: reply,
         subscriptionPlan: plan,
-      });
+      }).catch((error) => console.error('[assistant] logAIUsage failed after response:', error));
     }
 
     await addAIChatMessage(user.uid, chatId, {
@@ -173,29 +175,35 @@ export default function AIAssistantScreen() {
         ...(caption ? { text: caption } : {}),
       });
 
-      const { allowed, plan, limit } = await checkAIUsageLimit(user.uid).catch(() => ({ allowed: true }));
+      const { allowed, plan, limit } = await checkAIUsageLimit(user.uid);
       let reply;
       if (!allowed) {
         reply = aiLimitReachedMessage(plan, limit);
       } else {
-        // Reuse the same compressed image we just uploaded (url is already
-        // a "data:image/jpeg;base64,..." URI) instead of the original,
-        // uncompressed picker output — keeps this fast and avoids sending
-        // a multi-MB payload to the vision API.
-        const dataUrl = base64 ? url : null;
-        reply = dataUrl
+        // `url` is now the Storage download link (for display/persistence);
+        // the vision API needs actual image bytes, so rebuild the data URI
+        // from the same compressed base64 we already have in memory from
+        // the upload step, instead of the original uncompressed picker
+        // output — keeps this fast and avoids sending a multi-MB payload.
+        const dataUrl = base64 ? `data:image/jpeg;base64,${base64}` : null;
+        // analyzeImageContent returns { text, model } — unwrap it here, and
+        // log against the model that actually answered.
+        const result = dataUrl
           ? await analyzeImageContent(attachment.name, dataUrl, caption)
-          : 'Sorry, I could not read that image.';
-        await incrementAIUsage(user.uid, 1);
+          : { text: 'Sorry, I could not read that image.', model: 'none' };
+        reply = result.text;
+        await incrementAIUsage(user.uid, 1).catch((error) =>
+          console.error('[assistant] image usage increment failed after response:', error)
+        );
         await logAIUsage({
           userId: user.uid,
           chatId,
           category: 'image_analysis',
-          model: 'gpt-4o-mini',
+          model: result.model,
           inputText: caption || attachment.name,
           outputText: reply,
           subscriptionPlan: plan,
-        });
+        }).catch((error) => console.error('[assistant] image usage log failed after response:', error));
       }
 
       await addAIChatMessage(user.uid, chatId, {
@@ -341,9 +349,8 @@ export default function AIAssistantScreen() {
       if (result.canceled) return;
       const asset = result.assets[0];
 
-      // Actual resize/compression (needed to reliably fit under
-      // MAX_FILE_BYTES and to keep the vision API payload small) happens at
-      // send time in uploadAIChatFile — see storage.js:compressChatImage.
+      // Actual resize/compression (to keep the vision API payload small)
+      // happens at send time in uploadAIChatFile — see storage.js:compressImage.
       setPendingAttachment({
         kind: 'image',
         uri: asset.uri,

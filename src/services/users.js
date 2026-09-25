@@ -5,11 +5,23 @@ import { PLANS } from '../config';
 export async function ensureUserProfile(firebaseUser) {
   const ref = doc(db, 'users', firebaseUser.uid);
   const snap = await getDoc(ref);
+  // NOTE: Firebase Auth preserves whatever case the person typed at sign-up
+  // ("John@Gmail.com" stays "John@Gmail.com" on firebaseUser.email) — it
+  // only case-folds internally for its own sign-in matching. findUserByEmail
+  // (below) always lowercases the search term, so any user doc whose stored
+  // email wasn't ALSO lowercased could never be found by a friend request —
+  // this was the real cause of "invitation feature doesn't work": people
+  // could sign up fine, but nobody could ever find them by email afterwards.
+  // Storing a dedicated `emailLower` field (in addition to the original-case
+  // `email`, kept for display) makes the search reliable regardless of the
+  // casing used at sign-up or at search time.
+  const emailLower = (firebaseUser.email || '').trim().toLowerCase();
   if (!snap.exists()) {
     await setDoc(ref, {
       uid: firebaseUser.uid,
       name: firebaseUser.displayName || '',
       email: firebaseUser.email || '',
+      emailLower,
       photoURL: firebaseUser.photoURL || null,
       plan: 'free',
       aiTokensUsed: 0,
@@ -19,12 +31,20 @@ export async function ensureUserProfile(firebaseUser) {
       uid: firebaseUser.uid,
       name: firebaseUser.displayName || '',
       email: firebaseUser.email || '',
+      emailLower,
       photoURL: firebaseUser.photoURL || null,
       plan: 'free',
       aiTokensUsed: 0,
     };
   }
   const data = snap.data();
+  // Backfill emailLower for accounts created before this field existed, and
+  // self-heal any doc that's missing it or went stale — merge so nothing
+  // else on the doc is touched. Fire-and-forget: never block returning the
+  // profile on this housekeeping write.
+  if (data.emailLower !== emailLower && emailLower) {
+    setDoc(ref, { emailLower }, { merge: true }).catch(() => {});
+  }
   // Firebase Auth (updateProfile) is the source of truth for name/photo right after
   // a save — if the Firestore doc is missing/stale (e.g. an earlier sync failed),
   // fall back to what Auth actually has instead of silently showing old data.
@@ -32,6 +52,7 @@ export async function ensureUserProfile(firebaseUser) {
     uid: firebaseUser.uid,
     ...data,
     name: data.name || firebaseUser.displayName || '',
+    emailLower: data.emailLower || emailLower,
     photoURL: data.photoURL !== undefined && data.photoURL !== null ? data.photoURL : firebaseUser.photoURL || null,
   };
 }
@@ -47,8 +68,21 @@ export async function updateUserDoc(uid, data) {
 }
 
 export async function findUserByEmail(email) {
-  const q = query(collection(db, 'users'), where('email', '==', email.trim().toLowerCase()));
-  const snap = await getDocs(q);
+  const target = email.trim().toLowerCase();
+  if (!target) return null;
+
+  const byLower = query(collection(db, 'users'), where('emailLower', '==', target));
+  let snap = await getDocs(byLower);
+
+  // Fallback for any pre-existing account whose doc predates emailLower and
+  // hasn't logged in since (so ensureUserProfile hasn't backfilled it yet).
+  // Matches only the exact original-case email, which still catches the
+  // common case of everyone typing lowercase.
+  if (snap.empty) {
+    const byExact = query(collection(db, 'users'), where('email', '==', target));
+    snap = await getDocs(byExact);
+  }
+
   if (snap.empty) return null;
   const d = snap.docs[0];
   return { id: d.id, ...d.data() };
@@ -62,7 +96,16 @@ export async function findUserByEmail(email) {
 // clobber each other.
 export async function incrementAIUsage(uid, amount = 1) {
   const ref = doc(db, 'users', uid);
-  await updateDoc(ref, { aiTokensUsed: increment(amount) });
+  // Also stamps aiUsageMonth (without clobbering it if already set to the
+  // current month) so the running total this increments always has a
+  // month tag on it — belt-and-suspenders alongside the reset in
+  // checkAIUsageLimit, in case some future call site ever increments
+  // usage without checking the limit first.
+  await setDoc(ref, { aiTokensUsed: increment(amount), aiUsageMonth: currentMonthKey() }, { merge: true });
+}
+
+function currentMonthKey(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 }
 
 // Checks whether a user still has AI requests left on their plan this month,
@@ -70,12 +113,31 @@ export async function incrementAIUsage(uid, amount = 1) {
 // (group chat, AI Assistant tab, file analysis, etc.) should call this first
 // — previously only the AI Usage screen showed "limit reached", but nothing
 // actually stopped a paid API call from firing once someone was over it.
+//
+// BUGFIX: aiTokensUsed was a lifetime counter that only ever went up
+// (incrementAIUsage does `increment(amount)` and nothing ever reset it).
+// Every plan (PLANS in config.js) is advertised and displayed as a
+// *monthly* allowance ("50 AI requests/mo", "requests remaining this
+// month" on AIUsageScreen), so a Free user who had sent 50 AI messages
+// EVER — not this month — was permanently locked out, forever, even
+// though the UI kept telling them their limit would come back. Track
+// which calendar month the current `aiTokensUsed` count belongs to
+// (`aiUsageMonth`, e.g. "2026-09") and reset the counter to 0 the first
+// time this is checked in a new month, so the limit actually behaves like
+// the "per month" allowance every screen already claims it is.
 export async function checkAIUsageLimit(uid) {
   const ref = doc(db, 'users', uid);
   const snap = await getDoc(ref);
   const data = snap.data() || {};
   const plan = data.plan || 'free';
-  const used = data.aiTokensUsed || 0;
+  const monthKey = currentMonthKey();
+
+  let used = data.aiTokensUsed || 0;
+  if (data.aiUsageMonth !== monthKey) {
+    used = 0;
+    await updateDoc(ref, { aiTokensUsed: 0, aiUsageMonth: monthKey });
+  }
+
   const limit = PLANS[plan]?.aiLimit ?? PLANS.free.aiLimit;
   return { allowed: used < limit, used, limit, plan };
 }

@@ -247,7 +247,7 @@ export default function GroupChatScreen() {
         )}
 
         {/* Input bar */}
-        <View style={[styles.inputBar, { backgroundColor: colors.surface, borderTopColor: colors.border }]}>
+        <View style={[styles.inputBar, { backgroundColor: colors.surface, borderTopColor: colors.border, marginBottom: spacing.md }]}>
           <Pressable onPress={handleAttach} disabled={sending} hitSlop={8}>
             <Ionicons name="attach" size={24} color={sending ? colors.textMuted : colors.primary} />
           </Pressable>

@@ -1,15 +1,20 @@
 import {
   collection,
   addDoc,
+  deleteDoc,
+  getDocs,
   query,
   orderBy,
-  onSnapshot,
-  getDocs,
-  serverTimestamp,
   limit,
+  onSnapshot,
+  serverTimestamp,
 } from 'firebase/firestore';
 import { db } from './firebase';
-import { updateGroupLastMessage, getGroup } from './groups';
+import { AI_BOT_NAME } from '../config';
+import { updateGroupLastMessage } from './groups';
+import { checkAIUsageLimit, incrementAIUsage } from './users';
+import { logAIUsage } from './usageTracking';
+import { hasReadyDocuments, retrieveContext } from './rag';
 import {
   generateAIReply,
   generateRAGAnswer,
@@ -18,281 +23,234 @@ import {
   detectAICommand,
   aiCommandHelpMessage,
   aiLimitReachedMessage,
-  analyzeImageContent,
 } from './ai';
-import { retrieveContext, hasReadyDocuments } from './rag';
-import { incrementAIUsage, checkAIUsageLimit } from './users';
-import { createNotification } from './notifications';
-import { logAIUsage } from './usageTracking';
 
+// BUGFIX: this file used to be an accidental near-duplicate of services/ai.js
+// (same OpenRouter call plumbing, no actual messaging code) instead of the
+// real Firestore message CRUD it's supposed to contain. GroupChatScreen,
+// ActionItemsScreen and ConversationSummaryScreen all import
+// subscribeMessages/sendMessage/getMessagesForSummary from THIS file — none
+// of those were ever exported, so opening any group chat crashed immediately
+// with "subscribeMessages is not a function". All AI reply generation
+// (generateAIReply, generateRAGAnswer, etc.) belongs solely in services/ai.js
+// — this file only orchestrates *when* to call it for a group message.
+
+const MENTION_RE = /@(?:HiveAI|AI)\b/i;
+// The group-chat UI explicitly tells users "HiveAI is listening — just chat",
+// but the actual trigger only ran on @HiveAI mentions. Make normal user messages
+// eligible for a reply too, while still allowing explicit mentions/commands to
+// work and preventing the bot from answering its own output.
+function shouldTriggerAIReply(senderId, text) {
+  const trimmed = (text || '').trim();
+  if (!trimmed || senderId === 'hiveai') return false;
+  return true;
+}
+// How many of the most recent real messages to hand to the AI as
+// short-term conversation memory (mirrors AIAssistantScreen's history slice).
+const HISTORY_LIMIT = 8;
+// How many messages getMessagesForSummary pulls for /summarize + /tasks —
+// bounded so a very long-lived group doesn't try to summarize thousands of
+// messages in one prompt (generateConversationSummary/extractActionItems
+// already truncate the transcript text itself, this just bounds the read).
+const SUMMARY_MESSAGE_LIMIT = 200;
+
+function messagesCollection(groupId) {
+  return collection(db, 'groups', groupId, 'messages');
+}
+
+function isRealMessage(m) {
+  return m.type !== 'ai_typing' && !!m.text && !!m.text.trim();
+}
+
+function previewFor(type, text, fileName) {
+  if (type === 'image') return `📷 ${fileName || 'Photo'}`;
+  if (type === 'file') return `📎 ${fileName || 'File'}`;
+  return (text || '').trim();
+}
+
+// Live subscription to a group's messages, oldest first (what
+// GroupChatScreen's FlatList expects). Logs and falls back to an empty list
+// on failure instead of leaving the screen stuck with no explanation — same
+// pattern as subscribeGroup/subscribeNotifications elsewhere in this app.
 export function subscribeMessages(groupId, callback) {
-  const q = query(
-    collection(db, 'groups', groupId, 'messages'),
-    orderBy('createdAt', 'asc'),
-    limit(200)
-  );
+  const q = query(messagesCollection(groupId), orderBy('createdAt', 'asc'));
   return onSnapshot(
     q,
-    (snap) => {
-      callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    },
+    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
     (err) => {
-      console.warn('subscribeMessages error:', err.message);
+      console.error('[messages] subscribeMessages FAILED', { groupId, code: err.code, message: err.message });
       callback([]);
     }
   );
 }
 
-
-export async function getMessagesForSummary(groupId, max = 100) {
-  const q = query(
-    collection(db, 'groups', groupId, 'messages'),
-    orderBy('createdAt', 'asc'),
-    limit(max)
-  );
+// One-time fetch used by ActionItemsScreen/ConversationSummaryScreen (and
+// internally for the /summarize and /tasks commands below) — a live
+// subscription isn't needed for a single "generate a summary now" action.
+export async function getMessagesForSummary(groupId) {
+  const q = query(messagesCollection(groupId), orderBy('createdAt', 'asc'), limit(SUMMARY_MESSAGE_LIMIT));
   const snap = await getDocs(q);
-  return snap.docs
-    .map((d) => ({ id: d.id, ...d.data() }))
-    .filter((m) => m.type !== 'ai_typing');
+  return snap.docs.map((d) => d.data()).filter(isRealMessage);
 }
 
-// Most recent N real messages, oldest-first — used to give the AI
-// short-term conversation memory when it replies to an @HiveAI mention
-// (README Phase 5: "AI conversation memory"). Unlike getMessagesForSummary
-// (which takes the earliest `max` messages), this deliberately grabs the
-// tail end of the conversation.
-async function getRecentMessages(groupId, max = 10) {
-  const q = query(
-    collection(db, 'groups', groupId, 'messages'),
-    orderBy('createdAt', 'desc'),
-    limit(max)
-  );
-  const snap = await getDocs(q);
-  return snap.docs
-    .map((d) => ({ id: d.id, ...d.data() }))
-    .filter((m) => m.type !== 'ai_typing')
-    .reverse();
-}
+// Writes a message (text, image, or file — see GroupChatScreen) and updates
+// the group's lastMessage/lastMessageAt preview. If the text contains an
+// @HiveAI/@AI mention, kicks off the AI reply flow WITHOUT awaiting it —
+// the reply can take up to ~45s (see services/ai.js), and this function's
+// caller (GroupChatScreen's `sending` state) should only wait on the user's
+// own message actually being written, not on HiveAI's answer.
+export async function sendMessage(groupId, { senderId, senderName, text = '', type = 'text', fileUrl, fileName }) {
+  const trimmedText = (text || '').trim();
+  const willTriggerAI = shouldTriggerAIReply(senderId, trimmedText);
 
-export async function sendMessage(groupId, { text, senderId, senderName, type = 'text', fileUrl, fileName }) {
-  const preview =
-    type === 'file'
-      ? `📎 ${fileName || 'File'}`
-      : type === 'image'
-      ? text?.trim()
-        ? text
-        : '📷 Photo'
-      : text;
-  const msg = {
-    text: text || '',
+  // BUGFIX: this used to be read AFTER the addDoc below, from inside
+  // triggerAIReply. Since that addDoc is awaited (so the message is already
+  // committed server-side) before triggerAIReply ever runs, that later query
+  // for "recent history" always pulled the message being sent right now back
+  // in as the newest history entry — and generateAIReply then appended that
+  // *same* text again as the final user prompt, so every AI reply saw the
+  // triggering message twice in a row. Snapshot history BEFORE writing the
+  // new message so it only ever contains messages that came before it.
+  const history = willTriggerAI ? await fetchRecentHistory(groupId) : [];
+
+  const payload = {
     senderId,
     senderName,
     type,
+    text: trimmedText,
     createdAt: serverTimestamp(),
   };
   if (fileUrl) {
-    msg.fileUrl = fileUrl;
-    msg.fileName = fileName;
+    payload.fileUrl = fileUrl;
+    payload.fileName = fileName;
   }
-  await addDoc(collection(db, 'groups', groupId, 'messages'), msg);
-  await updateGroupLastMessage(groupId, `${senderName}: ${preview.slice(0, 80)}`);
 
-  // HiveAI replies to EVERY text message sent in the group — no @HiveAI /
-  // @AI mention is required. The cleanup of that mention inside
-  // generateAIReply/detectAICommand only matters for messages that DO
-  // include it (so it doesn't leak into the prompt); it was never a
-  // condition that gated whether AI responds at all.
-  if (type === 'text' && text?.trim()) {
-    await triggerAIResponse(groupId, text, senderId, senderName);
-  } else if (type === 'image' && fileUrl) {
-    // An uploaded photo deserves a real answer too, not silence — analyze
-    // it with the vision model, using whatever caption/prompt the user
-    // typed alongside it (see GroupChatScreen's held-attachment flow).
-    await triggerImageAIResponse(groupId, fileUrl, fileName, text, senderId, senderName);
+  await addDoc(messagesCollection(groupId), payload);
+
+  const preview = previewFor(type, trimmedText, fileName);
+  await updateGroupLastMessage(groupId, senderName ? `${senderName}: ${preview}` : preview);
+
+  if (willTriggerAI) {
+    // Fire-and-forget: errors are already handled (and a fallback message
+    // posted) inside triggerAIReply itself, so this .catch is just a safety
+    // net against anything escaping that — it must never surface as an
+    // unhandled promise rejection or block the sender's UI.
+    triggerAIReply(groupId, { senderId, senderName, text: trimmedText, history }).catch((e) =>
+      console.error('[messages] triggerAIReply FAILED (non-fatal)', { groupId, code: e.code, message: e.message })
+    );
   }
 }
 
-async function triggerAIResponse(groupId, userText, senderId, senderName) {
-  // Check the sender's plan limit BEFORE spending a real (paid) AI call —
-  // the AI Usage screen already showed "limit reached", but nothing
-  // previously stopped the actual API request from firing once someone
-  // was over it.
-  const { allowed, plan, limit } = await checkAIUsageLimit(senderId).catch(() => ({ allowed: true }));
+// Recent real messages, oldest first, for conversation-memory context —
+// same idea as AIAssistantScreen's `history` slice, just read from
+// Firestore instead of component state since group members share one
+// message list rather than each holding their own.
+async function fetchRecentHistory(groupId) {
+  const q = query(messagesCollection(groupId), orderBy('createdAt', 'desc'), limit(HISTORY_LIMIT));
+  const snap = await getDocs(q);
+  return snap.docs
+    .map((d) => d.data())
+    .filter(isRealMessage)
+    .reverse()
+    .map((m) => ({ senderId: m.senderId, senderName: m.senderName, text: m.text }));
+}
 
-  const typingRef = await addDoc(collection(db, 'groups', groupId, 'messages'), {
-    text: '',
+// Runs the full @HiveAI reply flow for one mention: shows a typing
+// placeholder every group member can see, checks the sender's monthly AI
+// limit, routes to /summarize, /tasks, /help, RAG (if the group has
+// documents uploaded), or a plain conversational reply, then swaps the
+// placeholder for the real answer and logs usage — mirroring
+// AIAssistantScreen's generateAndSendReply, adapted for a shared Firestore
+// message list instead of local component state.
+async function triggerAIReply(groupId, { senderId, senderName, text, history = [] }) {
+  const typingRef = await addDoc(messagesCollection(groupId), {
     senderId: 'hiveai',
-    senderName: 'HiveAI',
+    senderName: AI_BOT_NAME,
     type: 'ai_typing',
+    text: '',
     createdAt: serverTimestamp(),
   });
 
   try {
+    const { allowed, plan, limit: usageLimit } = await checkAIUsageLimit(senderId);
+
     let reply;
     let sources = [];
-    let consumedRequest = false;
-    let usageCategory = 'group_mention';
+    let category = 'group_mention';
+    let skipUsage = false;
 
     if (!allowed) {
-      reply = aiLimitReachedMessage(plan, limit);
+      reply = aiLimitReachedMessage(plan, usageLimit);
+      skipUsage = true;
     } else {
-      // AI commands (README Phase 5: "@HiveAI summarize", "@HiveAI tasks",
-      // "@HiveAI help") take priority over the normal chat/RAG reply path.
-      const cmd = detectAICommand(userText);
+      const command = detectAICommand(text);
 
-      if (cmd?.command === 'help') {
+      if (command?.command === 'help') {
         reply = aiCommandHelpMessage();
-        consumedRequest = false; // pure help text — no AI call spent
-      } else if (cmd?.command === 'summarize') {
-        const history = await getMessagesForSummary(groupId).catch(() => []);
-        reply = await generateConversationSummary(history);
-        usageCategory = 'summary';
-        consumedRequest = true;
-      } else if (cmd?.command === 'tasks') {
-        const history = await getMessagesForSummary(groupId).catch(() => []);
-        reply = await extractActionItems(history);
-        usageCategory = 'action_items';
-        consumedRequest = true;
+        skipUsage = true; // no AI provider call made, nothing to meter
+      } else if (command?.command === 'summarize') {
+        category = 'summary';
+        const transcript = await getMessagesForSummary(groupId);
+        reply = await generateConversationSummary(transcript);
+      } else if (command?.command === 'tasks') {
+        category = 'action_items';
+        const transcript = await getMessagesForSummary(groupId);
+        reply = await extractActionItems(transcript);
       } else {
         const scopePath = `groups/${groupId}`;
         const usesDocs = await hasReadyDocuments(scopePath).catch(() => false);
-        const history = await getRecentMessages(groupId, 10).catch(() => []);
-
         if (usesDocs) {
-          const chunks = await retrieveContext({ scopePath, question: userText, topK: 4 });
+          const chunks = await retrieveContext({ scopePath, question: text, topK: 4 });
           if (chunks.length) {
-            const result = await generateRAGAnswer(userText, chunks);
+            const result = await generateRAGAnswer(text, chunks);
             reply = result.text;
             sources = result.sources;
           } else {
-            reply = await generateAIReply(userText, senderName, history);
+            reply = await generateAIReply(text, senderName, history);
           }
         } else {
-          reply = await generateAIReply(userText, senderName, history);
+          reply = await generateAIReply(text, senderName, history);
         }
-        consumedRequest = true;
+      }
+
+      if (!skipUsage) {
+        await incrementAIUsage(senderId, 1).catch((e) =>
+          console.error('[messages] incrementAIUsage FAILED (non-fatal):', e.code, e.message)
+        );
+        await logAIUsage({
+          userId: senderId,
+          groupId,
+          category,
+          model: category,
+          inputText: text,
+          outputText: reply,
+          subscriptionPlan: plan,
+        });
       }
     }
 
-    if (consumedRequest) {
-      await incrementAIUsage(senderId, 1);
-      await logAIUsage({
-        userId: senderId,
-        groupId,
-        category: usageCategory,
-        model: 'group-chat',
-        inputText: userText,
-        outputText: reply,
-        subscriptionPlan: plan,
-      });
-    }
-
-    // Tag which message/sender this reply is answering. In a busy group,
-    // several people can send messages within moments of each other — each
-    // gets its own independent AI reply (no shared/overwritten state), but
-    // without this tag it's easy to lose track of which reply answers which
-    // message once they're interleaved in the list.
-    const aiMsg = {
-      text: reply,
+    await deleteDoc(typingRef);
+    await addDoc(messagesCollection(groupId), {
       senderId: 'hiveai',
-      senderName: 'HiveAI',
+      senderName: AI_BOT_NAME,
       type: 'ai',
-      replyToSenderName: senderName,
-      replyToText: userText.slice(0, 120),
-      createdAt: serverTimestamp(),
-    };
-    if (sources.length) aiMsg.sources = sources;
-
-    await addDoc(collection(db, 'groups', groupId, 'messages'), aiMsg);
-    await updateGroupLastMessage(groupId, 'HiveAI: ' + reply.slice(0, 80));
-
-    // Notify every other group member that HiveAI replied, not just the
-    // person who sent the message that triggered it — otherwise the rest
-    // of the group only finds out by opening the chat.
-    const group = await getGroup(groupId).catch(() => null);
-    const recipients = (group?.memberIds || []).filter((uid) => uid !== senderId);
-    await Promise.all(
-      recipients.map((uid) =>
-        createNotification({
-          userId: uid,
-          type: 'ai_reply',
-          title: 'HiveAI replied',
-          body: reply.slice(0, 100),
-          groupId,
-          groupName: group?.name,
-        }).catch(() => {})
-      )
-    );
-  } finally {
-    const { deleteDoc, doc: firestoreDoc } = await import('firebase/firestore');
-    await deleteDoc(firestoreDoc(db, 'groups', groupId, 'messages', typingRef.id)).catch(() => {});
-  }
-}
-
-// Same idea as triggerAIResponse, but for a shared photo instead of text —
-// runs it through the vision model (with whatever caption the sender typed
-// alongside it) so HiveAI actually comments on the image itself instead of
-// staying silent or replying to the wrong thing.
-async function triggerImageAIResponse(groupId, fileUrl, fileName, caption, senderId, senderName) {
-  const { allowed, plan, limit } = await checkAIUsageLimit(senderId).catch(() => ({ allowed: true }));
-
-  const typingRef = await addDoc(collection(db, 'groups', groupId, 'messages'), {
-    text: '',
-    senderId: 'hiveai',
-    senderName: 'HiveAI',
-    type: 'ai_typing',
-    createdAt: serverTimestamp(),
-  });
-
-  try {
-    let reply;
-    if (!allowed) {
-      reply = aiLimitReachedMessage(plan, limit);
-    } else {
-      reply = await analyzeImageContent(fileName, fileUrl, caption);
-      await incrementAIUsage(senderId, 1);
-      await logAIUsage({
-        userId: senderId,
-        groupId,
-        category: 'image_analysis',
-        model: 'gpt-4o-mini',
-        inputText: caption || fileName,
-        outputText: reply,
-        subscriptionPlan: plan,
-      });
-    }
-
-    const aiMsg = {
       text: reply,
-      senderId: 'hiveai',
-      senderName: 'HiveAI',
-      type: 'ai',
-      replyToSenderName: senderName,
-      replyToText: caption ? caption.slice(0, 120) : `📷 ${fileName || 'Photo'}`,
+      ...(sources.length ? { sources } : {}),
       createdAt: serverTimestamp(),
-    };
-
-    await addDoc(collection(db, 'groups', groupId, 'messages'), aiMsg);
-    await updateGroupLastMessage(groupId, 'HiveAI: ' + reply.slice(0, 80));
-
-    const group = await getGroup(groupId).catch(() => null);
-    const recipients = (group?.memberIds || []).filter((uid) => uid !== senderId);
-    await Promise.all(
-      recipients.map((uid) =>
-        createNotification({
-          userId: uid,
-          type: 'ai_reply',
-          title: 'HiveAI replied',
-          body: reply.slice(0, 100),
-          groupId,
-          groupName: group?.name,
-        }).catch(() => {})
-      )
-    );
+    });
+    await updateGroupLastMessage(groupId, `${AI_BOT_NAME}: ${(reply || '').slice(0, 100)}`);
   } catch (e) {
-    console.error('triggerImageAIResponse error:', e);
-  } finally {
-    const { deleteDoc, doc: firestoreDoc } = await import('firebase/firestore');
-    await deleteDoc(firestoreDoc(db, 'groups', groupId, 'messages', typingRef.id)).catch(() => {});
+    console.error('[messages] triggerAIReply error:', e);
+    await deleteDoc(typingRef).catch(() => {});
+    const fallback = "Sorry, I ran into a problem answering that just now. Please try again in a moment 🙏";
+    await addDoc(messagesCollection(groupId), {
+      senderId: 'hiveai',
+      senderName: AI_BOT_NAME,
+      type: 'ai',
+      text: fallback,
+      createdAt: serverTimestamp(),
+    }).catch(() => {});
+    await updateGroupLastMessage(groupId, `${AI_BOT_NAME}: ${fallback}`).catch(() => {});
+    throw e;
   }
 }

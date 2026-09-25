@@ -260,6 +260,13 @@ export default function HomeScreen() {
           onPress={() => setModalVisible(true)}
           style={{ marginTop: spacing.lg }}
         />
+
+        <Button
+          title="Join with a code"
+          variant="text"
+          onPress={() => navigation.navigate('JoinGroup')}
+          style={{ marginTop: spacing.sm }}
+        />
       </ScrollView>
 
       <Modal visible={modalVisible} transparent animationType="fade">

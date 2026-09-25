@@ -110,7 +110,8 @@ export function AuthProvider({ children }) {
         fullName ? updateProfile(credential.user, { displayName: fullName }) : Promise.resolve(),
         updateUserDoc(credential.user.uid, {
           name: fullName,
-          email: email.trim().toLowerCase(),
+          email: email.trim(),
+          emailLower: email.trim().toLowerCase(),
         }).catch(() => { }),
       ]);
       setUser({

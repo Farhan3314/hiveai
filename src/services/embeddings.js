@@ -1,7 +1,7 @@
 import { OPENROUTER_API_KEY, EMBEDDING_MODEL } from '../config';
 
-// Embeddings only exist through OpenRouter in this project (no OpenAI key
-// requirement, no backend) — this mirrors the free-model-only setup already
+// Embeddings go through OpenRouter, the only AI provider in this project
+// (no backend required) — this mirrors the free-model-only setup already
 // used for chat replies in services/ai.js.
 export function embeddingsAvailable() {
   return !!OPENROUTER_API_KEY;

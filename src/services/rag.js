@@ -20,7 +20,7 @@ const CHUNK_OVERLAP = 150;
 const EMBED_BATCH_SIZE = 8;
 const MIN_SIMILARITY = 0.15;
 
-export function getFileExtension(fileName = '') {
+function getFileExtension(fileName = '') {
   const parts = String(fileName).split('.');
   return parts.length > 1 ? parts.pop().toLowerCase() : '';
 }
