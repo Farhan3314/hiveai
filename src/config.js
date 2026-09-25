@@ -12,8 +12,21 @@ export const AI_BOT_NAME = 'HiveAI';
 
 // Default free text model used for chat replies, summaries, action items
 // and RAG answers.
-export const AI_MODEL = process.env.EXPO_PUBLIC_AI_MODEL || 'nvidia/nemotron-3.5-lightning:free';
-export const AI_FALLBACK_MODEL = process.env.EXPO_PUBLIC_AI_FALLBACK_MODEL || 'qwen/qwen3.8-27b:free';
+//
+// `openrouter/free` is OpenRouter's own router: it picks a currently-healthy
+// free model on every request instead of always hitting one fixed model. We
+// used to default straight to `nvidia/nemotron-3.5-lightning:free`, but that
+// model is hosted by exactly ONE backing provider (no automatic failover), so
+// whenever that single host was slow/overloaded every request timed out
+// after the full 45s with nowhere else to go. Routing through the free-model
+// router avoids that single point of failure.
+export const AI_MODEL = process.env.EXPO_PUBLIC_AI_MODEL || 'openrouter/free';
+// Fallback stays a concrete (non-router) model on purpose: if the router
+// itself has an off moment, retrying with the SAME router could just land on
+// the same struggling model again. Nemotron 3 Ultra is one of OpenRouter's
+// most-used free models, so it's less likely to be idle/cold.
+export const AI_FALLBACK_MODEL =
+  process.env.EXPO_PUBLIC_AI_FALLBACK_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free';
 
 // The text model above can't see images. This one can (image + text input),
 // so it handles photo analysis in the AI Assistant and group chats.

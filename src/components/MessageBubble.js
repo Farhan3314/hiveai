@@ -39,15 +39,11 @@ export default function MessageBubble({ message, isOwn, onEdit }) {
     ]);
   };
 
-  // Attachments are stored as base64 "data:" URIs on the Firestore doc itself
-  // (see services/storage.js — Firebase Storage/paid plan was removed).
-  // Linking.openURL only works for URL schemes some app on the device has
-  // registered a handler for (http, mailto, etc.) — there is no such handler
-  // for a raw "data:" URI, so calling it here used to fail silently (or with
-  // an unhandled promise rejection) every single time someone tapped a file
-  // attachment. Documents can't be usefully "opened" without adding a
-  // file-writing/sharing dependency, so we tell the user plainly instead of
-  // pretending the tap did something.
+  // Attachments are uploaded to Cloud Storage for Firebase and stored as
+  // real HTTPS download URLs on the message doc (see services/storage.js).
+  // Linking.canOpenURL/openURL work fine for https:// links, so this opens
+  // the file in the device's browser/viewer; the fallback alert below only
+  // fires if the device genuinely can't open it (e.g. no network).
   const handleOpenFile = async () => {
     if (!message.fileUrl) return;
     try {

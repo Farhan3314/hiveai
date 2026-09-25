@@ -1,6 +1,7 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { initializeAuth, getReactNativePersistence, getAuth } from 'firebase/auth';
 import { initializeFirestore, getFirestore } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
@@ -41,4 +42,11 @@ if (Platform.OS === 'web') {
   });
 }
 
-export { app, auth, db };
+// Cloud Storage for Firebase — requires the project to be on the Blaze
+// (pay-as-you-go) billing plan; Google no longer allows provisioning or
+// using Storage buckets on the free Spark plan. Staying within the no-cost
+// quota (5GB stored / 1GB downloaded per day) keeps the bill at $0 even on
+// Blaze — see https://firebase.google.com/docs/storage/faqs-storage-changes-announced-sept-2024
+const storage = getStorage(app);
+
+export { app, auth, db, storage };

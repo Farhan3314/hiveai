@@ -1,7 +1,7 @@
 import { AI_BOT_NAME, OPENROUTER_API_KEY, AI_MODEL, AI_FALLBACK_MODEL, AI_VISION_MODEL } from '../config';
 
 
-export const AI_SERVICE_VERSION = 'v3-2026-09-21';
+export const AI_SERVICE_VERSION = 'v4-2026-09-23';
 console.log(`[ai] service loaded (${AI_SERVICE_VERSION})`);
 
 // Free reasoning models (Nemotron / Qwen "thinking") can take well over 20s to

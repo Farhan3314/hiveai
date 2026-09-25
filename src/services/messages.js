@@ -36,6 +36,15 @@ import {
 // — this file only orchestrates *when* to call it for a group message.
 
 const MENTION_RE = /@(?:HiveAI|AI)\b/i;
+// The group-chat UI explicitly tells users "HiveAI is listening — just chat",
+// but the actual trigger only ran on @HiveAI mentions. Make normal user messages
+// eligible for a reply too, while still allowing explicit mentions/commands to
+// work and preventing the bot from answering its own output.
+function shouldTriggerAIReply(senderId, text) {
+  const trimmed = (text || '').trim();
+  if (!trimmed || senderId === 'hiveai') return false;
+  return true;
+}
 // How many of the most recent real messages to hand to the AI as
 // short-term conversation memory (mirrors AIAssistantScreen's history slice).
 const HISTORY_LIMIT = 8;
@@ -92,6 +101,17 @@ export async function getMessagesForSummary(groupId) {
 // own message actually being written, not on HiveAI's answer.
 export async function sendMessage(groupId, { senderId, senderName, text = '', type = 'text', fileUrl, fileName }) {
   const trimmedText = (text || '').trim();
+  const willTriggerAI = shouldTriggerAIReply(senderId, trimmedText);
+
+  // BUGFIX: this used to be read AFTER the addDoc below, from inside
+  // triggerAIReply. Since that addDoc is awaited (so the message is already
+  // committed server-side) before triggerAIReply ever runs, that later query
+  // for "recent history" always pulled the message being sent right now back
+  // in as the newest history entry — and generateAIReply then appended that
+  // *same* text again as the final user prompt, so every AI reply saw the
+  // triggering message twice in a row. Snapshot history BEFORE writing the
+  // new message so it only ever contains messages that came before it.
+  const history = willTriggerAI ? await fetchRecentHistory(groupId) : [];
 
   const payload = {
     senderId,
@@ -110,12 +130,12 @@ export async function sendMessage(groupId, { senderId, senderName, text = '', ty
   const preview = previewFor(type, trimmedText, fileName);
   await updateGroupLastMessage(groupId, senderName ? `${senderName}: ${preview}` : preview);
 
-  if (trimmedText && MENTION_RE.test(trimmedText)) {
+  if (willTriggerAI) {
     // Fire-and-forget: errors are already handled (and a fallback message
     // posted) inside triggerAIReply itself, so this .catch is just a safety
     // net against anything escaping that — it must never surface as an
     // unhandled promise rejection or block the sender's UI.
-    triggerAIReply(groupId, { senderId, senderName, text: trimmedText }).catch((e) =>
+    triggerAIReply(groupId, { senderId, senderName, text: trimmedText, history }).catch((e) =>
       console.error('[messages] triggerAIReply FAILED (non-fatal)', { groupId, code: e.code, message: e.message })
     );
   }
@@ -142,7 +162,7 @@ async function fetchRecentHistory(groupId) {
 // placeholder for the real answer and logs usage — mirroring
 // AIAssistantScreen's generateAndSendReply, adapted for a shared Firestore
 // message list instead of local component state.
-async function triggerAIReply(groupId, { senderId, senderName, text }) {
+async function triggerAIReply(groupId, { senderId, senderName, text, history = [] }) {
   const typingRef = await addDoc(messagesCollection(groupId), {
     senderId: 'hiveai',
     senderName: AI_BOT_NAME,
@@ -186,11 +206,9 @@ async function triggerAIReply(groupId, { senderId, senderName, text }) {
             reply = result.text;
             sources = result.sources;
           } else {
-            const history = await fetchRecentHistory(groupId);
             reply = await generateAIReply(text, senderName, history);
           }
         } else {
-          const history = await fetchRecentHistory(groupId);
           reply = await generateAIReply(text, senderName, history);
         }
       }

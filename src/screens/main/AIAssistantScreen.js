@@ -180,11 +180,12 @@ export default function AIAssistantScreen() {
       if (!allowed) {
         reply = aiLimitReachedMessage(plan, limit);
       } else {
-        // Reuse the same compressed image we just uploaded (url is already
-        // a "data:image/jpeg;base64,..." URI) instead of the original,
-        // uncompressed picker output — keeps this fast and avoids sending
-        // a multi-MB payload to the vision API.
-        const dataUrl = base64 ? url : null;
+        // `url` is now the Storage download link (for display/persistence);
+        // the vision API needs actual image bytes, so rebuild the data URI
+        // from the same compressed base64 we already have in memory from
+        // the upload step, instead of the original uncompressed picker
+        // output — keeps this fast and avoids sending a multi-MB payload.
+        const dataUrl = base64 ? `data:image/jpeg;base64,${base64}` : null;
         // analyzeImageContent returns { text, model } — unwrap it here, and
         // log against the model that actually answered.
         const result = dataUrl
@@ -348,9 +349,8 @@ export default function AIAssistantScreen() {
       if (result.canceled) return;
       const asset = result.assets[0];
 
-      // Actual resize/compression (needed to reliably fit under
-      // MAX_FILE_BYTES and to keep the vision API payload small) happens at
-      // send time in uploadAIChatFile — see storage.js:compressChatImage.
+      // Actual resize/compression (to keep the vision API payload small)
+      // happens at send time in uploadAIChatFile — see storage.js:compressImage.
       setPendingAttachment({
         kind: 'image',
         uri: asset.uri,
