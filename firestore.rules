@@ -49,6 +49,27 @@ service cloud.firestore {
         match /messages/{messageId} {
           allow read, write: if isSignedIn() && request.auth.uid == uid;
         }
+
+        // BUGFIX: document/file uploads in the AI Assistant go through the
+        // same RAG pipeline as group chat (services/rag.js: ingestDocument →
+        // users/{uid}/aiChats/{chatId}/ragDocuments/{docId}/chunks/{chunkId}),
+        // but this scope had no rule for it. Firestore rules don't cascade to
+        // subcollections, so every write here was silently denied
+        // ("Missing or insufficient permissions"), which is exactly why
+        // FileAnalysisScreen always ended up in its error state for any file
+        // attached from the AI Assistant (group chat's equivalent
+        // groups/{groupId}/ragDocuments rule below already covered that
+        // case, which is why only the AI Assistant looked broken).
+        match /ragDocuments/{docId} {
+          allow read, create, update: if isSignedIn() && request.auth.uid == uid;
+          allow delete: if isSignedIn() && request.auth.uid == uid;
+
+          match /chunks/{chunkId} {
+            allow read, create: if isSignedIn() && request.auth.uid == uid;
+            allow update: if false;
+            allow delete: if isSignedIn() && request.auth.uid == uid;
+          }
+        }
       }
     }
 

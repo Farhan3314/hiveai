@@ -32,7 +32,7 @@ import * as ImageManipulator from 'expo-image-manipulator';
 // Use the new `File` class instead of switching to the legacy import, since
 // it's the supported long-term API.
 import { File } from 'expo-file-system';
-import { ref, uploadString, getDownloadURL } from 'firebase/storage';
+import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { storage } from './firebase';
 
 const AVATAR_TARGET_BYTES = 300 * 1024; // final base64 size we aim the avatar under
@@ -98,31 +98,47 @@ const assertSizeWithinLimit = async (uri, fileName) => {
 // Reads a local file URI and uploads it to Cloud Storage, returning a
 // public HTTPS download URL.
 //
-// IMPORTANT: this used to do `fetch(uri).blob()` then hand that Blob to  
-// `uploadBytes()`. That's the pattern Firebase's web docs show, but on
-// React Native it throws "Creating blobs from 'ArrayBuffer' and
-// 'ArrayBufferView' are not supported" — RN's Blob polyfill can't be
-// constructed from raw bytes the way the Firebase JS SDK needs internally
-// when it re-wraps the Blob for upload. This is a known RN/Firebase-web-SDK
-// incompatibility, not something fixable by adjusting fetch options.
-// Reading the file as base64 (via expo-file-system's `File.base64()`) and
-// uploading with `uploadString(..., 'base64')` sidesteps Blob entirely —
-// the same approach already used for images below.
+// IMPORTANT — history of this function, because the bug it works around is
+// easy to reintroduce by "simplifying" this later:
+//   1. It used to do `fetch(uri).blob()` then hand that Blob to
+//      `uploadBytes()`. That throws "Creating blobs from 'ArrayBuffer' and
+//      'ArrayBufferView' are not supported" on React Native.
+//   2. Reading the file as base64 and calling `uploadString(..., 'base64')`
+//      looked like a fix (and does avoid the fetch().blob() call), but it
+//      throws the *exact same* error, because `uploadString` internally
+//      calls the same non-resumable "multipart" upload path as
+//      `uploadBytes`. That path builds the HTTP body by merging a text
+//      preamble + the file's raw bytes + a text postamble into ONE Blob via
+//      `new Blob([preamble, bytes, postamble])` (see
+//      @firebase/storage/dist/index.esm.js, function `multipartUpload`) —
+//      and constructing a Blob from raw bytes is exactly what RN's Blob
+//      polyfill refuses to do. So neither `uploadBytes` nor `uploadString`
+//      actually works here, no matter what data type they're given.
+//   3. `uploadBytesResumable` is the one Storage upload function that never
+//      takes that code path — the resumable protocol sends the metadata as
+//      a plain JSON string in one request and the raw bytes as the body of
+//      separate requests, with no Blob merging anywhere. That's what's used
+//      below, with the file read as raw bytes (`File.bytes()`) instead of
+//      base64, since there's no more reason to base64-encode/decode at all.
 async function uploadUriToStorage(storagePath, uri, fileName) {
   const file = new File(uri);
-  const base64 = await file.base64();
+  const bytes = await file.bytes();
   const contentType = detectContentType(fileName);
   const storageRef = ref(storage, storagePath);
-  await uploadString(storageRef, base64, 'base64', { contentType });
+  await uploadBytesResumable(storageRef, bytes, { contentType });
   return getDownloadURL(storageRef);
 }
 
-// For images we already have the compressed bytes as a base64 string in
-// memory (from ImageManipulator) — hand that straight to uploadString
-// instead of round-tripping it back through fetch()/blob() on a data: URI.
-async function uploadBase64ToStorage(storagePath, base64, contentType) {
+// Same as uploadUriToStorage, for the resized/compressed image file that
+// compressImage() writes to disk. Takes a file URI (not a base64 string) so
+// this can read raw bytes directly too — see uploadUriToStorage's comment
+// for why raw bytes + uploadBytesResumable is the only combination that
+// actually works on React Native.
+async function uploadImageToStorage(storagePath, uri, contentType) {
+  const file = new File(uri);
+  const bytes = await file.bytes();
   const storageRef = ref(storage, storagePath);
-  await uploadString(storageRef, base64, 'base64', { contentType });
+  await uploadBytesResumable(storageRef, bytes, { contentType });
   return getDownloadURL(storageRef);
 }
 
@@ -144,7 +160,11 @@ async function compressImage(uri, targetBytes, startWidth = 1280, minWidth = 320
     const dataUri = `data:image/jpeg;base64,${result.base64}`;
     const isLastAttempt = attempt === 5;
     if (dataUri.length <= targetBytes || isLastAttempt) {
-      return { dataUri, base64: result.base64 };
+      // `result.uri` is the resized/compressed JPEG that ImageManipulator
+      // wrote to disk — returned alongside the base64 so callers can upload
+      // straight from it as raw bytes (see uploadImageToStorage) instead of
+      // decoding the base64 string back into bytes themselves.
+      return { dataUri, base64: result.base64, uri: result.uri };
     }
 
     width = Math.max(minWidth, Math.round(width * 0.75));
@@ -176,8 +196,8 @@ export async function uploadChatFile(groupId, uri, fileName, kind = 'document') 
 
   if (kind === 'image') {
     await assertSizeWithinLimit(uri, fileName);
-    const { base64 } = await compressImage(uri, CHAT_IMAGE_TARGET_BYTES);
-    const url = await uploadBase64ToStorage(`groupFiles/${groupId}/${stamp}_${safeName}.jpg`, base64, 'image/jpeg');
+    const { base64, uri: resizedUri } = await compressImage(uri, CHAT_IMAGE_TARGET_BYTES);
+    const url = await uploadImageToStorage(`groupFiles/${groupId}/${stamp}_${safeName}.jpg`, resizedUri, 'image/jpeg');
     return { url, fileName: safeName, base64 };
   }
 
@@ -194,10 +214,10 @@ export async function uploadAIChatFile(userId, chatId, uri, fileName, kind = 'do
 
   if (kind === 'image') {
     await assertSizeWithinLimit(uri, fileName);
-    const { base64 } = await compressImage(uri, CHAT_IMAGE_TARGET_BYTES);
-    const url = await uploadBase64ToStorage(
+    const { base64, uri: resizedUri } = await compressImage(uri, CHAT_IMAGE_TARGET_BYTES);
+    const url = await uploadImageToStorage(
       `aiChatFiles/${userId}/${chatId}/${stamp}_${safeName}.jpg`,
-      base64,
+      resizedUri,
       'image/jpeg'
     );
     return { url, fileName: safeName, base64 };
