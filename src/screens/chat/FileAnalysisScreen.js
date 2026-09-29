@@ -18,9 +18,12 @@ import { useTheme } from '../../theme/ThemeContext';
 import { useAuth } from '../../context/AuthContext';
 import { generateRAGAnswer, aiLimitReachedMessage } from '../../services/ai';
 import { ingestDocument, retrieveContext, isRAGSupported } from '../../services/rag';
+import { extractTextFromFile } from '../../services/textExtract';
 import { embeddingsAvailable } from '../../services/embeddings';
 import { incrementAIUsage, checkAIUsageLimit } from '../../services/users';
 import { logAIUsage } from '../../services/usageTracking';
+import { postAIMessage } from '../../services/messages';
+import { addAIChatMessage } from '../../services/aiChats';
 import { RAG_SUPPORTED_EXTENSIONS } from '../../config';
 
 // STAGE constants drive the "Uploading -> Processing -> Completed" status
@@ -34,12 +37,16 @@ const STAGE = {
   UNSUPPORTED: 'unsupported',
 };
 
+// Used when the document was sent with no caption/prompt, so HiveAI still
+// replies right after processing instead of sitting silent.
+const DEFAULT_QUESTION = 'Please give a short summary of this document and list its key points.';
+
 export default function FileAnalysisScreen() {
   const { colors, typography, spacing, radius } = useTheme();
   const { user } = useAuth();
   const navigation = useNavigation();
   const route = useRoute();
-  const { fileName, fileUrl, fileUri, groupId, aiChatId, initialQuestion } = route.params || {};
+  const { fileName, fileUri, groupId, aiChatId, initialQuestion } = route.params || {};
 
   const scopePath = groupId ? `groups/${groupId}` : `users/${user.uid}/aiChats/${aiChatId}`;
 
@@ -50,6 +57,27 @@ export default function FileAnalysisScreen() {
   const [question, setQuestion] = useState('');
   const listRef = useRef(null);
   const askedInitialQuestion = useRef(false);
+
+  // Copies HiveAI's answer into the chat the file was sent from (group chat
+  // for everyone to see, or the user's own AI Assistant thread), so the
+  // reply shows up in the conversation itself — not just on this screen.
+  const mirrorToChat = async (text, sources = []) => {
+    try {
+      if (groupId) {
+        await postAIMessage(groupId, { text, sources });
+      } else if (aiChatId) {
+        await addAIChatMessage(user.uid, aiChatId, {
+          senderId: 'hiveai',
+          senderName: 'HiveAI',
+          type: 'ai',
+          text,
+          ...(sources.length ? { sources } : {}),
+        });
+      }
+    } catch (e) {
+      console.error('[file-analysis] mirrorToChat failed (non-fatal):', e);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -63,18 +91,17 @@ export default function FileAnalysisScreen() {
 
       if (!isRAGSupported(fileName)) {
         setStage(STAGE.UNSUPPORTED);
-        setStatusText(
-          `"${fileName}" isn't a supported text format. This app reads ${RAG_SUPPORTED_EXTENSIONS.map((e) => `.${e}`).join(', ')} files directly in Expo Go. Try exporting this file as .txt and re-uploading.`
-        );
+        const unsupportedMsg = `"${fileName}" isn't a format I can read yet. I can read ${RAG_SUPPORTED_EXTENSIONS.map((e) => `.${e}`).join(', ')} files. Try exporting it as PDF or .txt and re-uploading.`;
+        setStatusText(unsupportedMsg);
+        mirrorToChat(unsupportedMsg);
         return;
       }
 
       try {
         setStage(STAGE.READING);
         setStatusText('Reading file...');
-        const res = await fetch(fileUri);
-        if (!res.ok) throw new Error(`Could not read the file (status ${res.status}).`);
-        const text = await res.text();
+        // PDF / DOCX are parsed on-device; text-like files are read directly.
+        const { text, truncated } = await extractTextFromFile(fileUri, fileName);
         if (cancelled) return;
 
         if (!text || !text.trim()) {
@@ -87,7 +114,6 @@ export default function FileAnalysisScreen() {
         const { docId: newDocId, chunkCount } = await ingestDocument({
           scopePath,
           fileName,
-          fileUrl,
           text,
           onProgress: (status, detail) => {
             if (cancelled) return;
@@ -102,13 +128,19 @@ export default function FileAnalysisScreen() {
         if (chunkCount > 0) {
           setDocId(newDocId);
           setStage(STAGE.READY);
-          setStatusText(`Ready — ask anything about this document (${chunkCount} sections indexed).`);
+          setStatusText(
+            `Ready — ask anything about this document (${chunkCount} sections indexed).` +
+              (truncated ? ' The file is very long, so only the first part was indexed.' : '')
+          );
         }
       } catch (e) {
         if (cancelled) return;
         console.error('FileAnalysis ingest error:', e);
+        const failMsg = e.message || 'Something went wrong while processing this file.';
         setStage(STAGE.ERROR);
-        setStatusText(e.message || 'Something went wrong while processing this file.');
+        setStatusText(failMsg);
+        // Also tell the chat the file came from, so it isn't left silent.
+        mirrorToChat(`I couldn't read "${fileName}". ${failMsg}`);
       }
     }
 
@@ -122,11 +154,12 @@ export default function FileAnalysisScreen() {
   // Extracted so it can be triggered either by the user pressing send, or
   // automatically once the doc finishes processing if they already typed a
   // prompt before it was uploaded (see initialQuestion below).
-  const handleAsk = async (overrideQuestion) => {
+  const handleAsk = async (overrideQuestion, { auto = false } = {}) => {
     // onPress/onSubmitEditing call this with a native event object, not a
     // string — treat anything that isn't a real string override as "use
     // the current question state" instead of crashing on event.trim().
     const source = typeof overrideQuestion === 'string' ? overrideQuestion : question;
+    const isAuto = auto === true;
     const trimmed = source.trim();
     if (!trimmed || stage !== STAGE.READY) return;
 
@@ -141,11 +174,14 @@ export default function FileAnalysisScreen() {
       let sources = [];
       if (!allowed) {
         answer = aiLimitReachedMessage(plan, limit);
+        if (isAuto) await mirrorToChat(answer);
       } else {
-        const chunks = await retrieveContext({ scopePath, docId, question: trimmed, topK: 4 });
+        const chunks = await retrieveContext({ scopePath, docId, question: trimmed, topK: 4, fallbackToFirst: isAuto });
         const result = await generateRAGAnswer(trimmed, chunks);
         answer = result.text;
         sources = result.sources;
+        // The first (auto) answer is also posted into the chat itself.
+        if (isAuto) await mirrorToChat(answer, sources);
         await incrementAIUsage(user.uid, 1).catch(() => {});
         await logAIUsage({
           userId: user.uid,
@@ -179,9 +215,10 @@ export default function FileAnalysisScreen() {
   // the AI chat, ask it automatically the moment processing finishes,
   // instead of silently dropping it.
   useEffect(() => {
-    if (stage === STAGE.READY && initialQuestion?.trim() && !askedInitialQuestion.current) {
+    if (stage === STAGE.READY && !askedInitialQuestion.current) {
       askedInitialQuestion.current = true;
-      handleAsk(initialQuestion);
+      // With a caption -> answer that. Without one -> auto-summarize.
+      handleAsk(initialQuestion?.trim() || DEFAULT_QUESTION, { auto: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stage, initialQuestion]);

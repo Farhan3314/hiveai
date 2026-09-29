@@ -1,7 +1,7 @@
-import { AI_BOT_NAME, OPENROUTER_API_KEY, AI_MODEL, AI_FALLBACK_MODEL, AI_VISION_MODEL } from '../config';
+import { AI_BOT_NAME, OPENROUTER_API_KEY, AI_MODEL, AI_FALLBACK_MODEL, AI_VISION_MODEL, AI_VISION_FALLBACK_MODELS } from '../config';
 
 
-export const AI_SERVICE_VERSION = 'v4-2026-09-23';
+export const AI_SERVICE_VERSION = 'v5-2026-09-29';
 console.log(`[ai] service loaded (${AI_SERVICE_VERSION})`);
 
 // Free reasoning models (Nemotron / Qwen "thinking") can take well over 20s to
@@ -153,7 +153,7 @@ async function callOpenRouter(messages, maxTokens, model = AI_MODEL) {
       // A timeout means this model is too slow right now — retrying the same
       // model just burns another full timeout, so go straight to the fallback.
       if (!isRetryableProviderError(error) || error.timedOut || error.dailyLimit || error.status === 429 || attempt === AI_MAX_RETRIES) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 700 * (attempt + 1)));
+      await new Promise((resolve) => setTimeout(resolve, (error?.status >= 500 ? 2000 : 700) * (attempt + 1)));
     }
   }
 
@@ -315,6 +315,9 @@ function categoryHint(e) {
 // "(debug: …)" note always says exactly what went wrong (dev builds only need
 // to read the bubble instead of hunting through Metro logs).
 function aiFailureHint(e) {
+  // Provider names, raw errors and version stamps are for developers only —
+  // real users just get the friendly sentence.
+  if (typeof __DEV__ !== 'undefined' && !__DEV__) return '';
   const category = categoryHint(e);
   const raw = String(e?.message || '').trim();
   let out;
@@ -408,16 +411,23 @@ export async function analyzeImageContent(fileName, base64DataUrl, userPrompt) {
     },
   ];
 
-  try {
-    const reply = await callOpenRouter(visionMessages, 1024, AI_VISION_MODEL);
-    return { text: reply?.trim() || 'Could not analyze the image.', model: AI_VISION_MODEL };
-  } catch (e) {
-    console.error('analyzeImageContent error:', e);
-    return {
-      text: `Sorry, I couldn't analyze that image just now. Please try again in a moment 🙏${aiFailureHint(e)}`,
-      model: AI_VISION_MODEL,
-    };
+  const models = [AI_VISION_MODEL, ...AI_VISION_FALLBACK_MODELS.filter((m) => m !== AI_VISION_MODEL)];
+  let lastError;
+  for (const model of models) {
+    try {
+      const reply = await callOpenRouter(visionMessages, 1024, model);
+      return { text: reply?.trim() || 'Could not analyze the image.', model };
+    } catch (e) {
+      lastError = e;
+      console.warn('[ai] vision model failed, trying next', { model, status: e?.status });
+      if ([401, 403].includes(Number(e?.status)) || e?.dailyLimit) break;
+    }
   }
+  console.error('analyzeImageContent error:', lastError);
+  return {
+    text: `Sorry, I couldn't analyze that image just now. Please try again in a moment 🙏${aiFailureHint(lastError)}`,
+    model: AI_VISION_MODEL,
+  };
 }
 
 
@@ -431,7 +441,7 @@ export async function generateConversationSummary(messages) {
   const transcript = realMessages
     .map((m) => `${m.senderName || 'Someone'}: ${m.text}`)
     .join('\n')
-    .slice(0, 6000); // keep the prompt bounded for very long histories
+    .slice(-6000); // keep the prompt bounded — newest messages matter most
 
   if (!OPENROUTER_API_KEY) {
     return missingKeyMessage();
@@ -466,7 +476,7 @@ export async function extractActionItems(messages) {
   const transcript = realMessages
     .map((m) => `${m.senderName || 'Someone'}: ${m.text}`)
     .join('\n')
-    .slice(0, 6000);
+    .slice(-6000);
 
   if (!OPENROUTER_API_KEY) {
     return missingKeyMessage();

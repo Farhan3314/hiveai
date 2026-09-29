@@ -1,7 +1,6 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { initializeAuth, getReactNativePersistence, getAuth } from 'firebase/auth';
 import { initializeFirestore, getFirestore } from 'firebase/firestore';
-import { getStorage } from 'firebase/storage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
@@ -42,11 +41,13 @@ if (Platform.OS === 'web') {
   });
 }
 
-// Cloud Storage for Firebase — requires the project to be on the Blaze
-// (pay-as-you-go) billing plan; Google no longer allows provisioning or
-// using Storage buckets on the free Spark plan. Staying within the no-cost
-// quota (5GB stored / 1GB downloaded per day) keeps the bill at $0 even on
-// Blaze — see https://firebase.google.com/docs/storage/faqs-storage-changes-announced-sept-2024
-const storage = getStorage(app);
+// NOTE: Cloud Storage for Firebase is intentionally NOT initialized here.
+// It requires the project to be upgraded to the Blaze (pay-as-you-go)
+// billing plan — Google no longer allows provisioning or using Storage
+// buckets on the free Spark plan at all, even if actual usage would stay
+// within its no-cost quota. This project stays on Spark, so chat/AI
+// attachments are embedded as base64 straight into Firestore documents
+// instead — see services/storage.js for the size limits that keeps this
+// within Firestore's 1 MiB per-document cap.
 
-export { app, auth, db, storage };
+export { app, auth, db };

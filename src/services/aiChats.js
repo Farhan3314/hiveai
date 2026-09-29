@@ -10,6 +10,7 @@ import {
   onSnapshot,
   serverTimestamp,
   limit,
+  limitToLast,
 } from 'firebase/firestore';
 import { db } from './firebase';
 
@@ -46,7 +47,7 @@ export async function createAIChat(userId, firstMessageText) {
 }
 
 export function subscribeAIChatMessages(userId, chatId, callback) {
-  const q = query(messagesRef(userId, chatId), orderBy('createdAt', 'asc'));
+  const q = query(messagesRef(userId, chatId), orderBy('createdAt', 'asc'), limitToLast(300));
   return onSnapshot(
     q,
     (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),

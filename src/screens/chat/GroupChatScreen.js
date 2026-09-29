@@ -22,7 +22,9 @@ import { useTheme } from '../../theme/ThemeContext';
 import { useAuth } from '../../context/AuthContext';
 import MessageBubble from '../../components/MessageBubble';
 import { subscribeMessages, sendMessage } from '../../services/messages';
-import { uploadChatFile } from '../../services/storage';
+import { uploadChatFile, validateAttachment } from '../../services/storage';
+import { isRAGSupported } from '../../services/rag';
+import { DOCUMENT_PICKER_TYPES } from '../../config';
 
 export default function GroupChatScreen() {
   const { colors, typography, spacing, radius } = useTheme();
@@ -96,21 +98,26 @@ export default function GroupChatScreen() {
         ...(caption ? { text: caption } : {}),
       });
     } else {
+      // `url` is null for big PDF/Word/text files: they're analysed from the
+      // device but their bytes aren't kept inside the chat message.
       const { url, fileName } = await uploadChatFile(groupId, attachment.uri, attachment.name);
       await sendMessage(groupId, {
         senderId: user.uid,
         senderName: user.name || 'User',
         type: 'file',
-        fileUrl: url,
+        fileUrl: url || undefined,
         fileName,
         ...(caption ? { text: caption } : {}),
       });
+      if (!isRAGSupported(fileName)) {
+        Alert.alert('File sent', "HiveAI can't read this file type, so it was shared without analysis.");
+        return;
+      }
       // If the user already typed a prompt, pass it along so FileAnalysis
       // asks it automatically as soon as the document finishes processing.
       navigation.navigate('FileAnalysis', {
         groupId,
         fileName,
-        fileUrl: url,
         fileUri: attachment.uri,
         ...(caption ? { initialQuestion: caption } : {}),
       });
@@ -141,6 +148,8 @@ export default function GroupChatScreen() {
       });
       if (result.canceled) return;
       const asset = result.assets[0];
+      const imageName = asset.fileName || `photo_${Date.now()}.jpg`;
+      validateAttachment(asset.uri, imageName, 'image'); // fail fast, before the user types anything
 
       setPendingAttachment({
         kind: 'image',
@@ -156,9 +165,13 @@ export default function GroupChatScreen() {
   // Same idea for documents — hold it, don't upload until send is pressed.
   const handlePickDocument = async () => {
     try {
-      const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
+      const result = await DocumentPicker.getDocumentAsync({
+        type: DOCUMENT_PICKER_TYPES,
+        copyToCacheDirectory: true,
+      });
       if (result.canceled) return;
       const asset = result.assets[0];
+      validateAttachment(asset.uri, asset.name, 'document'); // fail fast, before the user types anything
 
       setPendingAttachment({
         kind: 'document',

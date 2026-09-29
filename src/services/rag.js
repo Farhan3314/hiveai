@@ -17,7 +17,9 @@ import { RAG_SUPPORTED_EXTENSIONS } from '../config';
 
 const CHUNK_SIZE = 800;
 const CHUNK_OVERLAP = 150;
-const EMBED_BATCH_SIZE = 8;
+// 16 chunks per embeddings request keeps the request count low — important on
+// OpenRouter's free tier, where every request counts against a daily budget.
+const EMBED_BATCH_SIZE = 16;
 const MIN_SIMILARITY = 0.15;
 
 function getFileExtension(fileName = '') {
@@ -59,13 +61,16 @@ function ragChunksCollection(scopePath, docId) {
  * onProgress(status, detail) is called as processing advances so the UI can
  * show "Uploading -> Processing -> Completed" (FR-028 style feedback).
  */
-export async function ingestDocument({ scopePath, fileName, fileUrl, text, onProgress }) {
+export async function ingestDocument({ scopePath, fileName, text, onProgress }) {
   const notify = (status, detail) => onProgress && onProgress(status, detail);
 
   const docsRef = ragDocsCollection(scopePath);
   const docRef = await addDoc(docsRef, {
     fileName,
-    fileUrl: fileUrl || null,
+    // NOTE: the file's bytes are NOT copied here. They already live on the
+    // chat message; duplicating a ~900KB base64 string into this document
+    // would double the storage and sit dangerously close to Firestore's
+    // 1 MiB document limit.
     status: 'processing',
     chunkCount: 0,
     error: null,
@@ -117,7 +122,7 @@ export async function ingestDocument({ scopePath, fileName, fileUrl, text, onPro
  * Retrieves the topK most relevant chunks for a question across every
  * "ready" document in scopePath (or a single docId, if provided).
  */
-export async function retrieveContext({ scopePath, docId, question, topK = 4 }) {
+export async function retrieveContext({ scopePath, docId, question, topK = 4, fallbackToFirst = false }) {
   const docsRef = ragDocsCollection(scopePath);
   const readyQuery = query(docsRef, where('status', '==', 'ready'));
   const docsSnap = docId
@@ -132,17 +137,24 @@ export async function retrieveContext({ scopePath, docId, question, topK = 4 }) 
     const chunksSnap = await getDocs(ragChunksCollection(scopePath, d.id));
     chunksSnap.docs.forEach((c) => {
       const data = c.data();
-      allChunks.push({ text: data.text, embedding: data.embedding, fileName: d.data().fileName });
+      allChunks.push({ text: data.text, embedding: data.embedding, fileName: d.data().fileName, order: data.order || 0 });
     });
   }
   if (allChunks.length === 0) return [];
 
   const questionVector = await embedOne(question);
-  const scored = allChunks
-    .map((c) => ({ ...c, score: cosineSimilarity(questionVector, c.embedding) }))
+  const withScores = allChunks.map((c) => ({ ...c, score: cosineSimilarity(questionVector, c.embedding) }));
+  let scored = withScores
     .filter((c) => c.score >= MIN_SIMILARITY)
     .sort((a, b) => b.score - a.score)
     .slice(0, topK);
+
+  // A generic "summarize this" prompt often scores low against every chunk.
+  // For that case, fall back to the start of the document instead of
+  // answering "nothing relevant found".
+  if (scored.length === 0 && fallbackToFirst) {
+    scored = withScores.sort((a, b) => a.order - b.order).slice(0, topK);
+  }
 
   return scored.map(({ text, fileName, score }) => ({ text, fileName, score }));
 }

@@ -25,7 +25,9 @@ import { generateAIReply, generateRAGAnswer, analyzeImageContent, aiLimitReached
 import { retrieveContext, hasReadyDocuments } from '../../services/rag';
 import { incrementAIUsage, checkAIUsageLimit } from '../../services/users';
 import { logAIUsage } from '../../services/usageTracking';
-import { uploadAIChatFile } from '../../services/storage';
+import { uploadAIChatFile, validateAttachment } from '../../services/storage';
+import { isRAGSupported } from '../../services/rag';
+import { DOCUMENT_PICKER_TYPES } from '../../config';
 import { useAuth } from '../../context/AuthContext';
 import {
   subscribeAIChats,
@@ -94,7 +96,7 @@ export default function AIAssistantScreen() {
 
   // Runs the actual AI reply generation + saves it — shared by a normal
   // send and by re-generating a reply after a message gets edited.
-  const generateAndSendReply = async (chatId, trimmed) => {
+  const generateAndSendReply = async (chatId, trimmed, historySource = messages) => {
     // Check the plan limit BEFORE spending a real AI call — mirrors the
     // same guard in group chat (services/messages.js).
     const { allowed, plan, limit } = await checkAIUsageLimit(user.uid);
@@ -110,7 +112,7 @@ export default function AIAssistantScreen() {
       const usesDocs = await hasReadyDocuments(scopePath).catch(() => false);
       // Give the assistant short-term memory of this conversation
       // (README Phase 5) instead of answering each message in isolation.
-      const history = messages
+      const history = historySource
         .filter((m) => m.id !== 'welcome' && m.text && m.text.trim())
         .slice(-8)
         .map((m) => ({ senderId: m.senderId, senderName: m.senderName, text: m.text }));
@@ -213,16 +215,28 @@ export default function AIAssistantScreen() {
         text: reply,
       });
     } else {
+      // `url` is null for big PDF/Word/text files: they're analysed from the
+      // device but their bytes aren't kept inside the chat message.
       const { url, fileName } = await uploadAIChatFile(user.uid, chatId, attachment.uri, attachment.name, 'document');
 
       await addAIChatMessage(user.uid, chatId, {
         senderId: user.uid,
         senderName: user.name || 'You',
         type: 'file',
-        fileUrl: url,
+        fileUrl: url || undefined,
         fileName,
         ...(caption ? { text: caption } : {}),
       });
+
+      if (!isRAGSupported(fileName)) {
+        await addAIChatMessage(user.uid, chatId, {
+          senderId: 'hiveai',
+          senderName: 'HiveAI',
+          type: 'ai',
+          text: `I can't read "${fileName}" yet — I can read PDF, Word (.docx), .txt, .md, .csv, .json and .log files.`,
+        });
+        return;
+      }
 
       // Full RAG processing (chunking + embeddings + retrieval) happens on
       // the FileAnalysis screen, which also shows upload/processing status.
@@ -231,7 +245,6 @@ export default function AIAssistantScreen() {
       navigation.navigate('FileAnalysis', {
         aiChatId: chatId,
         fileName,
-        fileUrl: url,
         fileUri: attachment.uri,
         ...(caption ? { initialQuestion: caption } : {}),
       });
@@ -314,7 +327,9 @@ export default function AIAssistantScreen() {
       if (staleIds.length) {
         await deleteAIChatMessages(user.uid, chatId, staleIds);
       }
-      await generateAndSendReply(chatId, trimmed);
+      // History = only what came BEFORE the edited message; `messages` in this
+      // closure still holds the old text and the stale AI reply.
+      await generateAndSendReply(chatId, trimmed, idx >= 0 ? messages.slice(0, idx) : messages);
     } catch (e) {
       Alert.alert('Error', e.message || 'Could not save your edit');
     } finally {
@@ -348,6 +363,8 @@ export default function AIAssistantScreen() {
       });
       if (result.canceled) return;
       const asset = result.assets[0];
+      const imageName = asset.fileName || `photo_${Date.now()}.jpg`;
+      validateAttachment(asset.uri, imageName, 'image'); // fail fast, before the user types anything
 
       // Actual resize/compression (to keep the vision API payload small)
       // happens at send time in uploadAIChatFile — see storage.js:compressImage.
@@ -365,9 +382,13 @@ export default function AIAssistantScreen() {
   // Same idea for documents — hold it, don't upload until send is pressed.
   const handlePickDocument = async () => {
     try {
-      const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
+      const result = await DocumentPicker.getDocumentAsync({
+        type: DOCUMENT_PICKER_TYPES,
+        copyToCacheDirectory: true,
+      });
       if (result.canceled) return;
       const asset = result.assets[0];
+      validateAttachment(asset.uri, asset.name, 'document'); // fail fast, before the user types anything
 
       setPendingAttachment({
         kind: 'document',

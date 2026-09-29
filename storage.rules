@@ -1,5 +1,13 @@
 rules_version = '2';
 
+// UNUSED: the app no longer uses Cloud Storage for Firebase for anything
+// (see src/services/storage.js and src/services/firebase.js) — chat/AI
+// attachments are embedded as base64 directly in Firestore documents
+// instead, so this project can stay on the free Spark billing plan rather
+// than requiring Blaze for a Storage bucket. This file (and the matching
+// "storage" section that used to be in firebase.json) is kept only in case
+// Cloud Storage is reintroduced later; it isn't deployed or enforced today.
+//
 // Cloud Storage rules for chat/AI-assistant file attachments.
 //
 // Group membership is enforced by firestore.rules on the message documents

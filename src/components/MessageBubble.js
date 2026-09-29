@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, Pressable, Linking, Image, Modal, Alert } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, Pressable, Image, Modal, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeContext';
+import { openStoredFile } from '../services/storage';
 
 export default function MessageBubble({ message, isOwn, onEdit }) {
-  const { colors, typography, radius, spacing } = useTheme();
+  const { colors, typography, radius } = useTheme();
   const isAI = message.senderId === 'hiveai' || message.type === 'ai';
   const isTyping = message.type === 'ai_typing';
   const [previewVisible, setPreviewVisible] = useState(false);
@@ -39,26 +40,24 @@ export default function MessageBubble({ message, isOwn, onEdit }) {
     ]);
   };
 
-  // Attachments are uploaded to Cloud Storage for Firebase and stored as
-  // real HTTPS download URLs on the message doc (see services/storage.js).
-  // Linking.canOpenURL/openURL work fine for https:// links, so this opens
-  // the file in the device's browser/viewer; the fallback alert below only
-  // fires if the device genuinely can't open it (e.g. no network).
+  // Attachments are embedded as base64 `data:` URIs directly on the message
+  // doc (see services/storage.js). Linking can't open `data:` URIs, so the
+  // bytes are written to the app cache and handed to the system share sheet
+  // ("Open with…", Save, Send). Big documents that were analysed but not
+  // stored have no fileUrl at all — say so instead of failing silently.
   const handleOpenFile = async () => {
-    if (!message.fileUrl) return;
-    try {
-      const canOpen = await Linking.canOpenURL(message.fileUrl);
-      if (canOpen) {
-        await Linking.openURL(message.fileUrl);
-        return;
-      }
-    } catch (e) {
-      // fall through to the friendly message below
+    if (!message.fileUrl) {
+      Alert.alert(
+        'File not stored',
+        `"${message.fileName || 'This file'}" was too large to keep in the chat. HiveAI still read it when it was sent.`
+      );
+      return;
     }
-    Alert.alert(
-      'Preview not available',
-      `"${message.fileName || 'This file'}" is stored inside the app and can't be opened by another app from here yet.`
-    );
+    try {
+      await openStoredFile(message.fileUrl, message.fileName);
+    } catch (e) {
+      Alert.alert('Could not open file', e?.message || 'Something went wrong while opening this file.');
+    }
   };
 
   return (
