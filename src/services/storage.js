@@ -41,6 +41,7 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { UPLOAD_LIMITS, RAG_SUPPORTED_EXTENSIONS } from '../config';
+import { openLocalFile } from '../utils/localFile';
 
 const AVATAR_TARGET_BYTES = 300 * 1024; // final base64 size we aim the avatar under
 
@@ -118,7 +119,7 @@ function bytesToBase64(bytes) {
 // images. This is what gets stored directly on the Firestore message (no
 // network upload, no Cloud Storage bucket involved).
 async function fileToDataUri(uri, fileName) {
-  const file = new File(uri);
+  const file = openLocalFile(uri);
   const bytes = await file.bytes();
   const base64 = bytesToBase64(bytes);
   const contentType = detectContentType(fileName);
@@ -168,9 +169,17 @@ export async function uploadAvatar(uid, uri) {
 // pressing send. Throws an Error with a user-friendly message; returns the
 // file size in bytes when the file is acceptable.
 export function validateAttachment(uri, fileName, kind = 'document') {
+  if (kind !== 'image') {
+    const ext = fileExtension(fileName);
+    if (!RAG_SUPPORTED_EXTENSIONS.includes(ext)) {
+      throw new Error(
+        `.${ext || 'this'} files can't be read by HiveAI yet. Please choose a ${RAG_SUPPORTED_EXTENSIONS.map((e) => `.${e}`).join(', ')} file.`
+      );
+    }
+  }
   let file;
   try {
-    file = new File(uri);
+    file = openLocalFile(uri);
   } catch (error) {
     throw new Error(`Could not read ${fileName || 'this file'} from the device.`);
   }

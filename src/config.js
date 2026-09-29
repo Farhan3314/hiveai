@@ -31,13 +31,40 @@ export const AI_FALLBACK_MODEL =
 // The text model above can't see images. This one can (image + text input),
 // so it handles photo analysis in the AI Assistant and group chats.
 export const AI_VISION_MODEL =
-  process.env.EXPO_PUBLIC_AI_VISION_MODEL || 'openrouter/free';
-// Tried in order if the vision model above fails (e.g. the single-host Nvidia
-// model hitting "ResourceExhausted 16/16"). Unknown/retired IDs just fail and
-// the next one is tried. Override with a comma-separated env var.
+  process.env.EXPO_PUBLIC_AI_VISION_MODEL || 'qwen/qwen3.8-27b:free';
+// Tried in order when the model above fails (busy / 429 / retired / not
+// allowed for API use). On top of this list the app also asks OpenRouter which
+// free image-capable models exist right now (see services/ai.js), so a retired
+// slug can never break image analysis again. Override with a comma-separated
+// env var; put a PAID model first here (e.g. google/gemma-3-27b-it) for
+// rock-solid results.
 export const AI_VISION_FALLBACK_MODELS = (
   process.env.EXPO_PUBLIC_AI_VISION_FALLBACK_MODELS ||
-  'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free,google/gemma-3-27b-it:free'
+  'dots-studio/dots-3-note-preview:free,nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free,openrouter/free'
+)
+  .split(',')
+  .map((m) => m.trim())
+  .filter(Boolean);
+
+// OPTIONAL second FREE provider: Google Gemini (Google AI Studio). It has its
+// own free quota, separate from OpenRouter's shared free pool, so chat, photo
+// and document answers keep working when OpenRouter's free models are busy.
+// Free key (no card): https://aistudio.google.com/apikey
+// Leave empty to keep using OpenRouter only.
+export const GEMINI_API_KEY = (process.env.EXPO_PUBLIC_GEMINI_API_KEY || '').trim();
+// Used when the app can't fetch Gemini's live model list. Both accept images.
+export const GEMINI_MODELS = (
+  process.env.EXPO_PUBLIC_GEMINI_MODELS || 'gemini-2.5-flash-lite,gemini-2.5-flash'
+)
+  .split(',')
+  .map((m) => m.trim())
+  .filter(Boolean);
+
+// Extra free TEXT models tried (after AI_MODEL and AI_FALLBACK_MODEL) for chat
+// replies, document answers, summaries and action items.
+export const AI_TEXT_FALLBACK_MODELS = (
+  process.env.EXPO_PUBLIC_AI_TEXT_FALLBACK_MODELS ||
+  'nvidia/nemotron-3-super-120b-a12b:free,qwen/qwen3.8-27b:free,nvidia/nemotron-3.5-lightning:free,poolside/laguna-s-2.1:free'
 )
   .split(',')
   .map((m) => m.trim())
@@ -56,15 +83,16 @@ export const EMBEDDING_MODEL =
 export const RAG_SUPPORTED_EXTENSIONS = ['txt', 'md', 'csv', 'json', 'log', 'docx', 'pdf'];
 
 // MIME types offered by the system file picker for "Document".
-export const DOCUMENT_PICKER_TYPES = [
-  'text/plain',
-  'text/markdown',
-  'text/csv',
-  'application/json',
-  'application/pdf',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'text/*',
-];
+// '*/*' on purpose: on many Android phones a list of specific MIME types makes
+// the system picker grey out (un-selectable) PDF/Word/.md/.log files whose
+// MIME type is reported as application/octet-stream. The extension is checked
+// right after picking instead (see validateAttachment in services/storage.js).
+export const DOCUMENT_PICKER_TYPES = ['*/*'];
+
+// Documents up to this many characters are sent to the chat model directly
+// (no embeddings, no Firestore round trips) — faster, and it doesn't depend on
+// the free embedding model being up. Longer ones use the RAG pipeline.
+export const DOCUMENT_DIRECT_MAX_CHARS = 14000;
 
 // Upload limits (single source of truth — shown to users in error messages).
 export const UPLOAD_LIMITS = {

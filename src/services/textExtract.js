@@ -1,4 +1,4 @@
-import { File } from 'expo-file-system';
+import { openLocalFile } from '../utils/localFile';
 import { RAG_SUPPORTED_EXTENSIONS, UPLOAD_LIMITS } from '../config';
 import { extractPdfText, extractDocxText, cleanText } from './textExtractCore';
 
@@ -23,7 +23,7 @@ export async function extractTextFromFile(uri, fileName) {
     throw new Error(`.${ext || 'this'} files can't be read by the AI yet.`);
   }
 
-  const file = new File(uri);
+  const file = openLocalFile(uri);
   if (!file.exists) throw new Error('Could not read the file from the device.');
 
   let text;

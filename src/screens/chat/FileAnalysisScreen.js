@@ -24,7 +24,7 @@ import { incrementAIUsage, checkAIUsageLimit } from '../../services/users';
 import { logAIUsage } from '../../services/usageTracking';
 import { postAIMessage } from '../../services/messages';
 import { addAIChatMessage } from '../../services/aiChats';
-import { RAG_SUPPORTED_EXTENSIONS } from '../../config';
+import { RAG_SUPPORTED_EXTENSIONS, DOCUMENT_DIRECT_MAX_CHARS } from '../../config';
 
 // STAGE constants drive the "Uploading -> Processing -> Completed" status
 // feedback (FR-028) and double as an error/unsupported state so the UI never
@@ -39,6 +39,18 @@ const STAGE = {
 
 // Used when the document was sent with no caption/prompt, so HiveAI still
 // replies right after processing instead of sitting silent.
+// Splits document text into a few big passages for generateRAGAnswer (used
+// when embeddings aren't needed or aren't available).
+function directChunks(fileName, text) {
+  const out = [];
+  const PIECE = 3500;
+  const capped = (text || '').slice(0, DOCUMENT_DIRECT_MAX_CHARS);
+  for (let i = 0; i < capped.length; i += PIECE) {
+    out.push({ fileName, text: capped.slice(i, i + PIECE), score: 1 });
+  }
+  return out;
+}
+
 const DEFAULT_QUESTION = 'Please give a short summary of this document and list its key points.';
 
 export default function FileAnalysisScreen() {
@@ -57,6 +69,8 @@ export default function FileAnalysisScreen() {
   const [question, setQuestion] = useState('');
   const listRef = useRef(null);
   const askedInitialQuestion = useRef(false);
+  const fullTextRef = useRef('');
+  const directModeRef = useRef(false);
 
   // Copies HiveAI's answer into the chat the file was sent from (group chat
   // for everyone to see, or the user's own AI Assistant thread), so the
@@ -110,29 +124,53 @@ export default function FileAnalysisScreen() {
           return;
         }
 
-        setStage(STAGE.PROCESSING);
-        const { docId: newDocId, chunkCount } = await ingestDocument({
-          scopePath,
-          fileName,
-          text,
-          onProgress: (status, detail) => {
-            if (cancelled) return;
-            if (status === 'error') {
-              setStage(STAGE.ERROR);
-            }
-            setStatusText(detail);
-          },
-        });
+        fullTextRef.current = text;
+        const longNote = truncated || text.length > DOCUMENT_DIRECT_MAX_CHARS;
 
-        if (cancelled) return;
-        if (chunkCount > 0) {
-          setDocId(newDocId);
+        // Short documents: no embeddings needed, answer straight from the text.
+        if (text.length <= DOCUMENT_DIRECT_MAX_CHARS) {
+          directModeRef.current = true;
           setStage(STAGE.READY);
-          setStatusText(
-            `Ready — ask anything about this document (${chunkCount} sections indexed).` +
-              (truncated ? ' The file is very long, so only the first part was indexed.' : '')
-          );
+          setStatusText('Ready — ask anything about this document.');
+          return;
         }
+
+        setStage(STAGE.PROCESSING);
+        try {
+          const { docId: newDocId, chunkCount } = await ingestDocument({
+            scopePath,
+            fileName,
+            text,
+            onProgress: (status, detail) => {
+              if (cancelled) return;
+              // Errors are handled by the fallback below, not shown as a dead end.
+              if (status !== 'error') setStatusText(detail);
+            },
+          });
+          if (cancelled) return;
+          if (chunkCount > 0) {
+            setDocId(newDocId);
+            setStage(STAGE.READY);
+            setStatusText(
+              `Ready — ask anything about this document (${chunkCount} sections indexed).` +
+                (truncated ? ' The file is very long, so only the first part was indexed.' : '')
+            );
+            return;
+          }
+        } catch (ingestError) {
+          if (cancelled) return;
+          console.warn('[file-analysis] indexing failed, answering from the start of the document instead:', ingestError?.message);
+        }
+
+        // Indexing failed (e.g. free embedding model busy): still answer from
+        // the beginning of the document instead of giving up.
+        directModeRef.current = true;
+        setStage(STAGE.READY);
+        setStatusText(
+          longNote
+            ? 'Ready — this file is long, so I will answer from its first part.'
+            : 'Ready — ask anything about this document.'
+        );
       } catch (e) {
         if (cancelled) return;
         console.error('FileAnalysis ingest error:', e);
@@ -176,7 +214,17 @@ export default function FileAnalysisScreen() {
         answer = aiLimitReachedMessage(plan, limit);
         if (isAuto) await mirrorToChat(answer);
       } else {
-        const chunks = await retrieveContext({ scopePath, docId, question: trimmed, topK: 4, fallbackToFirst: isAuto });
+        let chunks;
+        if (directModeRef.current) {
+          chunks = directChunks(fileName, fullTextRef.current);
+        } else {
+          try {
+            chunks = await retrieveContext({ scopePath, docId, question: trimmed, topK: 4, fallbackToFirst: isAuto });
+          } catch (retrieveError) {
+            console.warn('[file-analysis] retrieval failed, using start of document:', retrieveError?.message);
+            chunks = directChunks(fileName, fullTextRef.current);
+          }
+        }
         const result = await generateRAGAnswer(trimmed, chunks);
         answer = result.text;
         sources = result.sources;
